@@ -154,6 +154,56 @@ from `tools.yaml` entirely (or flip `enabled: true` to anything else;
 the server will refuse to start). The other toolsets
 (`analytics_readonly`, `analytics_metadata`) are unaffected.
 
+## Observability (OpenTelemetry)
+
+The Compose stack includes an [OpenTelemetry
+Collector](https://github.com/open-telemetry/opentelemetry-collector)
+sidecar receiving OTLP from Toolbox on port 4318 (HTTP). Toolbox emits:
+
+- A request-level span (`toolbox/server/tool/invoke`) per MCP tool
+  invocation, from upstream's own instrumentation.
+- A child `duckdb.query` span per SQL roundtrip (scope
+  `github.com/googleapis/mcp-toolbox/internal/sources/duckdbquack`),
+  with `db.system`, `toolbox.source.name`,
+  `db.statement.parameter_count`, `db.response.rows`,
+  `db.response.truncated`, `error.type`, and a `reattach` span event
+  on the recovery path.
+- Five DuckDB-scoped metrics: `duckdb.query.duration` (histogram, s),
+  `duckdb.query.rows_returned` (histogram), `duckdb.query.errors_total`
+  (counter, by `error.type`), `duckdb.query.truncated_total` (counter),
+  `duckdb.connection.reattach_total` (counter).
+
+The collector's `debug` exporter prints everything to stdout, so the
+observability view is just:
+
+```bash
+# Tail spans + metrics in real time
+docker compose logs -f otel-collector
+
+# Look at the most recent `duckdb.query` span
+docker compose logs otel-collector | grep -A20 'Name *: duckdb.query' | head -25
+```
+
+The Go OTel SDK's default metric reader flushes once per minute, so
+metric data points show up in collector logs ~60 s after the first
+invocation that produced them. Spans flush sooner (5 s default batch).
+
+To send to a real backend instead of stdout, edit
+[`otel-collector/config.yaml`](otel-collector/config.yaml) and replace
+the `debug` exporter with `otlphttp`, `otlp`, `tempo`, etc. Toolbox
+itself does not need to change — it talks OTLP to the collector, and
+the collector translates onward.
+
+The exporter configuration on the Toolbox side is two pieces:
+
+- `--telemetry-otlp otel-collector:4318` — a **host:port**, not a URL.
+  Toolbox prepends the scheme itself; passing `http://otel-collector:4318`
+  here yields a malformed `https://http://otel-collector:4318/v1/metrics`.
+- `OTEL_EXPORTER_OTLP_INSECURE=true` and
+  `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` env vars — needed because
+  the in-cluster collector is plaintext-HTTP and Toolbox's SDK defaults
+  to gRPC.
+
 ## LangGraph agent demo
 
 ```bash

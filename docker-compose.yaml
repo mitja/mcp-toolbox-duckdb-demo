@@ -11,6 +11,13 @@
 #                toolset and asks Claude to answer a sample question.
 #
 # Required env vars (see .env.example): QUACK_TOKEN, ANTHROPIC_API_KEY.
+#
+# An OTel collector sits beside the toolbox; the toolbox is configured
+# with --telemetry-otlp http://otel-collector:4318 so all of its spans
+# and metrics land there. The collector's debug exporter renders
+# everything to stdout, so `docker compose logs otel-collector` is the
+# observability view for the demo (replace the exporter with Tempo,
+# Jaeger, or a SaaS backend for anything serious).
 
 services:
   quack-server:
@@ -62,8 +69,26 @@ services:
       - "--enable-api"
       - "--log-level"
       - "DEBUG"
+      # `--telemetry-otlp` wants a host:port, NOT a URL. Toolbox builds the
+      # full `https://<host>/v1/{traces,metrics}` itself; passing `http://`
+      # here yields a malformed URL ("https://http://…/v1/metrics").
+      # For an in-cluster collector that does not terminate TLS, the
+      # OTEL_EXPORTER_OTLP_INSECURE env var below tells Toolbox's OTLP
+      # exporter to use plaintext HTTP.
+      - "--telemetry-otlp"
+      - "otel-collector:4318"
+      - "--telemetry-service-name"
+      - "duckdb-quack-demo"
     environment:
       QUACK_TOKEN: ${QUACK_TOKEN:?set QUACK_TOKEN in .env}
+      # OTLP exporter knobs:
+      #   - INSECURE=true:  the collector listens on plain HTTP inside
+      #                     the docker network (no TLS terminator).
+      #   - PROTOCOL=http/protobuf: Toolbox passes a host:port to the
+      #                     SDK; the SDK's default protocol is gRPC, so
+      #                     pin it to HTTP to match our 4318 endpoint.
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
     volumes:
       - ./tools.yaml:/cfg/tools.yaml:ro
     ports:
@@ -73,6 +98,18 @@ services:
     depends_on:
       quack-server:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
 
   langgraph:
     build: ./langgraph
