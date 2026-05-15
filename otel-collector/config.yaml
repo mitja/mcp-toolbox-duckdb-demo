@@ -22,15 +22,24 @@ processors:
     send_batch_size: 64
 
 exporters:
+  # Tail-the-logs view for the demo. Keep this on alongside any "real"
+  # exporter so `docker compose logs otel-collector` stays informative.
   debug:
     verbosity: detailed
+
+  # Fan out traces to Jaeger all-in-one over OTLP. Jaeger v1.35+ accepts
+  # OTLP natively when COLLECTOR_OTLP_ENABLED=true (set in docker-compose).
+  otlphttp/jaeger:
+    endpoint: http://jaeger:4318
+    tls:
+      insecure: true
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [debug, otlphttp/jaeger]
     metrics:
       receivers: [otlp]
       processors: [batch]

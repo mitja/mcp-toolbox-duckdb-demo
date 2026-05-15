@@ -157,8 +157,15 @@ the server will refuse to start). The other toolsets
 ## Observability (OpenTelemetry)
 
 The Compose stack includes an [OpenTelemetry
-Collector](https://github.com/open-telemetry/opentelemetry-collector)
-sidecar receiving OTLP from Toolbox on port 4318 (HTTP). Toolbox emits:
+Collector][otelcol] receiving OTLP from Toolbox on port 4318 (HTTP),
+plus a [Jaeger][jaeger] all-in-one instance for the visualization
+side. The collector fans traces out to both the `debug` exporter
+(stdout) and Jaeger via OTLP.
+
+[otelcol]: https://github.com/open-telemetry/opentelemetry-collector
+[jaeger]: https://www.jaegertracing.io/
+
+Toolbox emits:
 
 - A request-level span (`toolbox/server/tool/invoke`) per MCP tool
   invocation, from upstream's own instrumentation.
@@ -204,6 +211,73 @@ The exporter configuration on the Toolbox side is two pieces:
   the in-cluster collector is plaintext-HTTP and Toolbox's SDK defaults
   to gRPC.
 
+### Distributed tracing across services (visualize in Jaeger)
+
+The collector forwards every received span to Jaeger. Open
+**http://localhost:16686**, pick a service from the dropdown
+(`duckdb-quack-demo` for Toolbox-side spans, `trace-client` for the
+demo client below, `langgraph-demo` for the agent), and click any
+trace to see the full hierarchy on a flame graph.
+
+#### Demo client: `trace-client` (no API key needed)
+
+A small OTel-instrumented Python client lives at
+[`trace-client/`](trace-client/). It builds a `client.invoke` span,
+calls the `revenue_by_customer` tool via Toolbox's MCP JSON-RPC
+endpoint, and embeds its W3C `traceparent` in the MCP
+`_meta.traceparent` field. Toolbox extracts that and every
+downstream span (the HTTP receiver, the tool dispatcher, and our
+`duckdb.query`) joins the same trace.
+
+```bash
+# Bring up the OTel-instrumented stack
+docker compose up -d quack-server toolbox otel-collector jaeger
+
+# Run the demo client (profile-gated so `docker compose up` skips it)
+docker compose --profile trace run --rm trace-client
+
+# The client prints its trace_id at the end — paste it into the
+# Jaeger UI's "Lookup by Trace ID" box.
+```
+
+Expected hierarchy (5 spans, 2 services):
+
+```
+trace-client       client.invoke
+trace-client         POST (HTTP, auto-instrumented)
+duckdb-quack-demo      toolbox/server/mcp/http
+duckdb-quack-demo        tools/call revenue_by_customer
+duckdb-quack-demo          duckdb.query   ← our span, with db.system,
+                                            db.response.rows, etc.
+```
+
+#### Caveat: trace context flows via MCP `_meta`, not HTTP headers
+
+Toolbox extracts incoming `traceparent` from the **MCP JSON-RPC
+`_meta.traceparent` field** (see [`internal/server/mcp.go`][mcphandler]
+in the fork), **not** from the HTTP `traceparent` header. Two
+implications:
+
+1. Hitting `/api/tool/<name>/invoke` (the REST convenience endpoint)
+   never propagates trace context, regardless of what headers the
+   client sets. The toolbox-side spans show up under a fresh trace ID.
+2. MCP clients must put `traceparent` in `_meta.traceparent` — the
+   typical OTel auto-instrumentation that just adds the HTTP header
+   is not sufficient.
+
+The `trace-client` script does this explicitly. The `langgraph` demo
+relies on `toolbox-langchain` to propagate context; whether it does
+depends on the SDK version (the MCP 2025-06-18 spec made the `_meta`
+field standard, so a modern compliant SDK should). If your
+`langgraph-demo` traces show up under a separate trace from
+`duckdb-quack-demo`, that's the SDK not the wiring.
+
+A writeup for an upstream issue requesting either HTTP-header
+extraction on `/mcp` or richer client-SDK propagation lives in
+[`NOTES.md`](NOTES.md).
+
+[mcphandler]: https://github.com/mitja/mcp-toolbox-duckdb/blob/feat/duckdb-quack/internal/server/mcp.go
+
 ## LangGraph agent demo
 
 ```bash
@@ -213,6 +287,14 @@ docker compose --profile agent run --rm langgraph
 The agent loads the `analytics_readonly` toolset over HTTP, then asks Claude
 to summarize revenue for customers matching "gmbh". It prints the
 intermediate tool calls and the final answer.
+
+With OTel exporter env vars in place (the Compose file sets them by
+default), the LangGraph process also emits an `agent.invoke` span and
+auto-instrumented spans around every outgoing HTTP call (Toolbox, the
+Anthropic API). They show up under service `langgraph-demo` in Jaeger.
+Whether they join the same trace as `duckdb-quack-demo` depends on
+whether `toolbox-langchain` propagates `_meta.traceparent` (see the
+"Distributed tracing" caveat above).
 
 ## Wiring Claude Code
 

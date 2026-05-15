@@ -110,6 +110,38 @@ services:
     ports:
       - "4317:4317" # OTLP gRPC
       - "4318:4318" # OTLP HTTP
+    depends_on:
+      - jaeger
+
+  # Jaeger all-in-one: receives OTLP from the collector and serves the
+  # web UI. Open http://localhost:16686 to inspect traces.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: jaeger
+    environment:
+      # Jaeger v1.35+ ships native OTLP receivers; this env enables them.
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # Web UI
+      # 4317/4318 are exposed inside the docker network only; the
+      # collector talks to Jaeger over OTLP. Hostside OTLP stays
+      # mapped to the otel-collector service above.
+
+  # Tiny standalone client that emits an OTel trace + makes one HTTP
+  # call to Toolbox. Demonstrates that the LangGraph -> MCP -> SQL
+  # trace stitch works without needing an LLM API key. Profile-gated
+  # so it does not start with `docker compose up`.
+  trace-client:
+    build: ./trace-client
+    container_name: trace-client
+    environment:
+      TOOLBOX_URL: http://toolbox:5000
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_SERVICE_NAME: trace-client
+    depends_on:
+      - toolbox
+    profiles: ["trace"]
 
   langgraph:
     build: ./langgraph
@@ -117,6 +149,13 @@ services:
     environment:
       TOOLBOX_URL: http://toolbox:5000
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+      # OTel propagation: same collector as the toolbox-side stack.
+      # With these set, the agent's outgoing HTTP calls auto-inject
+      # W3C traceparent and the whole agent -> MCP -> SQL chain
+      # renders as one trace in Jaeger.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_SERVICE_NAME: langgraph-demo
     depends_on:
       - toolbox
     profiles: ["agent"]

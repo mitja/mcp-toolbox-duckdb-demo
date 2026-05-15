@@ -7,6 +7,16 @@ dependencies = [
     "toolbox-langchain>=0.4.0",
     "langgraph>=0.6.0",
     "langchain-anthropic>=0.3.0",
+    # OTel: same SDK + OTLP HTTP exporter as the trace-client, plus the
+    # three instrumentation packages that cover the libraries
+    # toolbox-langchain and the langchain stack reach for under the
+    # hood (httpx for async toolbox-core, requests as a sync fallback,
+    # urllib3 as the low-level base both ride on).
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    "opentelemetry-instrumentation-requests>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    "opentelemetry-instrumentation-urllib3>=0.48b0",
 ]
 
 [build-system]
