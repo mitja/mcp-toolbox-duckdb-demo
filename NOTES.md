@@ -162,3 +162,102 @@ connects`. Attach the Go reproducer above, the exact error message,
 the DuckDB + Quack versions, and a screenshot or `EXPLAIN`-style
 trace of which internal queries are actually being rejected if you
 can capture it (`SET GLOBAL quack_log_level = 'DEBUG'` may help).
+
+## `--telemetry-otlp` expects host:port, not a URL, and silently HTTPS+gRPC
+
+**Status:** Reproduced on Toolbox v1.2.0+dev (the
+`googleapis/mcp-toolbox` repo, HEAD as of May 2026). Not yet filed
+upstream.
+
+**Symptom:** Toolbox's CLI help advertises:
+
+```
+--telemetry-otlp string    Enable exporting using OpenTelemetry
+                           Protocol (OTLP) to the specified endpoint
+                           (e.g. 'http://127.0.0.1:4318')
+```
+
+Passing `http://otel-collector:4318` (a URL, as the help suggests)
+crashes at startup:
+
+```
+ERROR error setting up OpenTelemetry: unable to set up meter provider:
+parse "https://http:%2F%2Fotel-collector:4318/v1/metrics":
+invalid URL escape "%2F"
+```
+
+Stripping the scheme to `otel-collector:4318` gets past startup but
+the spans/metrics still don't reach a plaintext-HTTP collector:
+
+```
+traces export: Post "https://otel-collector:4318/v1/traces":
+http: server gave HTTP response to HTTPS client
+```
+
+**Cause (two layers):**
+
+1. The CLI calls
+   `otlpmetrichttp.New(ctx, otlpmetrichttp.WithEndpoint(telemetryOTLP))`
+   and the equivalent for traces (see
+   `internal/telemetry/telemetry.go`). `WithEndpoint` expects a
+   `host:port` string and the SDK prepends `https://<host>/v1/{...}`
+   itself. Passing a URL doubles the scheme.
+
+2. Even with a bare `host:port`, the SDK default scheme is HTTPS and
+   the default transport for the equivalent `otlptracehttp` /
+   `otlpmetrichttp` is HTTP (different from the SDK's *gRPC* default
+   when the user picks the wrong package, but the point is: TLS is
+   on unless told otherwise). For an in-cluster collector that does
+   not terminate TLS, the operator must set
+   `OTEL_EXPORTER_OTLP_INSECURE=true`, and to match a host:port HTTP
+   collector the operator typically also wants
+   `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`. Neither is mentioned
+   in the CLI help or the docs.
+
+**Reproducer:**
+
+```bash
+# Start a debug-exporter collector listening on plaintext HTTP 4318:
+docker run --rm -p 4318:4318 -p 4317:4317 \
+    -v "$PWD/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro" \
+    otel/opentelemetry-collector-contrib:0.115.1 \
+    --config=/etc/otelcol-contrib/config.yaml &
+
+# Form (a): URL as the help suggests — Toolbox refuses to start.
+toolbox --config tools.yaml --telemetry-otlp http://127.0.0.1:4318
+
+# Form (b): host:port — Toolbox starts, but the exporter sends
+# HTTPS to the plain-HTTP collector, telemetry never lands.
+toolbox --config tools.yaml --telemetry-otlp 127.0.0.1:4318
+
+# Form (c): host:port + the two env vars — works.
+OTEL_EXPORTER_OTLP_INSECURE=true \
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
+    toolbox --config tools.yaml --telemetry-otlp 127.0.0.1:4318
+```
+
+**Workaround (used by this demo):** `--telemetry-otlp
+otel-collector:4318` on the CLI plus
+`OTEL_EXPORTER_OTLP_INSECURE=true` and
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` in `environment:` on the
+toolbox service. See `docker-compose.yaml` and the README's
+"Observability" section for the full block.
+
+**To file upstream:** <https://github.com/googleapis/mcp-toolbox>.
+Title: `--telemetry-otlp accepts host:port but the CLI help suggests
+a URL, and TLS is on by default with no flag to disable it`. Two
+plausible fixes the issue should propose:
+
+1. **Docs-only**: update the help string and a docs page to say
+   `host:port (e.g. otel-collector:4318)`, document the two
+   `OTEL_EXPORTER_OTLP_*` env vars, and remove the misleading
+   `http://...` example.
+
+2. **Code**: accept a full URL on `--telemetry-otlp`. If the value
+   parses as a URL with a scheme, drive the exporter from the parsed
+   components (`http` → `WithInsecure()`, host:port from
+   `URL.Host`); else keep current host:port behavior. Less surprise
+   for operators copy-pasting from any OTLP doc on the internet.
+
+Attach the three reproducer forms above and the version probe
+(`toolbox --version`).
