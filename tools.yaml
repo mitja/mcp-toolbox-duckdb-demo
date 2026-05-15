@@ -58,7 +58,76 @@ tools:
       GROUP BY product
       ORDER BY total_qty DESC
 
+  # ---------------------------------------------------------------
+  # Metadata tools — let an agent discover the catalog before
+  # writing a query. Each tool has a fixed scope baked into this
+  # file; the agent supplies no parameters.
+  # ---------------------------------------------------------------
+
+  list_catalogs:
+    type: duckdb-list-catalogs
+    source: sales-quack
+    description: >-
+      List the catalogs the Toolbox-side DuckDB can see. Useful as the
+      first call when an agent is exploring an unfamiliar deployment.
+
+  list_remote_schemas:
+    type: duckdb-list-schemas
+    source: sales-quack
+    description: >-
+      List the schemas in the remote DuckDB's current database.
+
+  list_remote_tables:
+    type: duckdb-list-tables
+    source: sales-quack
+    description: >-
+      List the base tables and views in the remote `main` schema. The
+      result is a row per table with name and table_type.
+    schema: main
+    include_tables: true
+    include_views: true
+
+  describe_sales:
+    type: duckdb-describe-table
+    source: sales-quack
+    description: >-
+      Return the column names, types, and nullability of the
+      remote.main.sales table.
+    schema: main
+    table: sales
+
+  describe_orders:
+    type: duckdb-describe-table
+    source: sales-quack
+    description: >-
+      Return the column names, types, and nullability of the
+      remote.main.orders table.
+    schema: main
+    table: orders
+
+  summarize_sales:
+    type: duckdb-summarize-table
+    source: sales-quack
+    description: >-
+      Per-column statistics for remote.main.sales (min, max, avg, std,
+      quartiles, distinct counts, null percentages).
+    schema: main
+    table: sales
+
 toolsets:
+  # Query-oriented tools an agent uses to answer questions.
   analytics_readonly:
     - revenue_by_customer
     - top_products
+
+  # Discovery tools an agent uses to learn the catalog before
+  # constructing a query. Loaded as a separate toolset so a deployment
+  # can choose to expose just the queries (analytics_readonly), just
+  # the metadata (analytics_metadata), or both.
+  analytics_metadata:
+    - list_catalogs
+    - list_remote_schemas
+    - list_remote_tables
+    - describe_sales
+    - describe_orders
+    - summarize_sales

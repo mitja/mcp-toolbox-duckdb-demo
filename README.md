@@ -73,6 +73,43 @@ unwraps it. Example output:
 }
 ```
 
+## Metadata tools
+
+The demo `tools.yaml` exposes two toolsets:
+
+- **`analytics_readonly`** — `revenue_by_customer`, `top_products`. The
+  curated, parameterized queries an agent uses to answer questions
+  about the data.
+- **`analytics_metadata`** — `list_catalogs`, `list_remote_schemas`,
+  `list_remote_tables`, `describe_sales`, `describe_orders`,
+  `summarize_sales`. The discovery tools an agent uses to learn the
+  catalog before constructing a query. All six are parameterless from
+  the agent's perspective — schema/table scope is baked into
+  `tools.yaml` so deployment-time RBAC, not runtime tool calls,
+  controls what the agent can see.
+
+Smoke-test the metadata tools through the HTTP API:
+
+```bash
+# List the toolset's contents
+curl -s http://localhost:5555/api/toolset/analytics_metadata | jq '{tools: (.tools | keys)}'
+
+# Discovery flow: catalogs -> schemas -> tables -> describe a table
+curl -s -X POST http://localhost:5555/api/tool/list_catalogs/invoke      -d '{}' | jq '.result | fromjson'
+curl -s -X POST http://localhost:5555/api/tool/list_remote_tables/invoke -d '{}' | jq '.result | fromjson'
+curl -s -X POST http://localhost:5555/api/tool/describe_sales/invoke     -d '{}' | jq '.result | fromjson'
+
+# Per-column statistics
+curl -s -X POST http://localhost:5555/api/tool/summarize_sales/invoke    -d '{}' | jq '.result | fromjson'
+```
+
+The metadata tools that target the remote DuckDB (everything except
+`list_catalogs`) push their SQL through Quack's `quack_query()` table
+function. The Toolbox-side `information_schema` view of an ATTACHed
+catalog is intentionally incomplete (DuckDB does not push catalog
+enumeration through ATTACH), so `quack_query()` is the route that
+sees the live remote schema.
+
 ## LangGraph agent demo
 
 ```bash
