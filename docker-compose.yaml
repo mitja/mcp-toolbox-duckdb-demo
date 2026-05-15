@@ -13,7 +13,7 @@
 # Required env vars (see .env.example): QUACK_TOKEN, ANTHROPIC_API_KEY.
 
 services:
-  quack:
+  quack-server:
     build: ./quack-server
     container_name: duckdb-quack
     environment:
@@ -28,24 +28,50 @@ services:
       retries: 30
 
   toolbox:
+    # Override the upstream Dockerfile (which cross-compiles via Zig and
+    # cannot resolve C++ stdlib symbols that the DuckDB-go static library
+    # requires) with a native CGO build. golang:1 already ships gcc; we
+    # add g++ for libstdc++. The runtime stage matches upstream
+    # (distroless/cc supplies libc + libstdc++).
     build:
       context: ../mcp-toolbox-duckdb
-      dockerfile: Dockerfile
+      dockerfile_inline: |
+        # Pin builder to bookworm so the linked glibc matches the
+        # distroless/cc-debian12 runtime (golang:1's default debian
+        # version drifts forward independently).
+        FROM golang:1-bookworm AS build
+        RUN apt-get update \
+         && apt-get install -y --no-install-recommends g++ \
+         && rm -rf /var/lib/apt/lists/*
+        WORKDIR /src
+        COPY . .
+        ENV CGO_ENABLED=1
+        RUN go build -o /toolbox .
+
+        FROM gcr.io/distroless/cc-debian12:nonroot
+        WORKDIR /app
+        COPY --from=build --chown=nonroot /toolbox /toolbox
+        USER nonroot
+        ENTRYPOINT ["/toolbox"]
     container_name: toolbox-duckdb
     command:
-      - "serve"
-      - "--tools-file"
+      - "--config"
       - "/cfg/tools.yaml"
       - "--address"
       - "0.0.0.0"
+      - "--enable-api"
+      - "--log-level"
+      - "DEBUG"
     environment:
       QUACK_TOKEN: ${QUACK_TOKEN:?set QUACK_TOKEN in .env}
     volumes:
       - ./tools.yaml:/cfg/tools.yaml:ro
     ports:
-      - "5000:5000"
+      # Host 5555 → container 5000. macOS binds 5000 to AirPlay by default,
+      # which intercepts the published port; pick a free host port.
+      - "5555:5000"
     depends_on:
-      quack:
+      quack-server:
         condition: service_healthy
 
   langgraph:

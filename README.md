@@ -36,22 +36,42 @@ docker compose up --build       # builds and starts quack + toolbox
 ```
 
 When `toolbox-duckdb-1` logs `Server ready to serve` (or similar), the MCP
-Toolbox is reachable on `localhost:5000`. Smoke-test the tool:
+Toolbox is reachable on `localhost:5555`. Smoke-test the tool:
 
 ```bash
-# List available tools via the native API
-curl -s http://localhost:5000/api/tools | jq .
+# List the default toolset (or any specific one)
+curl -s http://localhost:5555/api/toolset | jq .
 
 # Invoke the curated revenue tool
-curl -s -X POST http://localhost:5000/api/tool/revenue_by_customer/invoke \
+curl -s -X POST http://localhost:5555/api/tool/revenue_by_customer/invoke \
     -H 'Content-Type: application/json' \
-    -d '{"customer_pattern": "gmbh"}' | jq .
+    -d '{"customer_pattern": "gmbh"}' \
+    | jq '.result | fromjson'
 ```
 
-You should get back a JSON response shaped like
-[spec §7](https://github.com/mitja/mcp-toolbox-duckdb/blob/feat/duckdb-quack/.spec/mcp-toolbox-quack-duckdb.md#7-result-format):
-typed columns, ordered rows, row count, truncation flag, and a statement
-hash.
+You should get back a JSON response shaped like spec §7: typed columns,
+ordered rows, row count, truncation flag, and a statement hash. The
+Toolbox `/api/tool/<name>/invoke` endpoint wraps the response in a
+`{"result": "<json-string>"}` envelope, so the `jq '.result | fromjson'`
+unwraps it. Example output:
+
+```json
+{
+  "columns": [
+    {"name": "customer", "type": "VARCHAR"},
+    {"name": "revenue",  "type": "DECIMAL(38,2)"},
+    {"name": "orders",   "type": "BIGINT"}
+  ],
+  "rows": [
+    {"customer": "Alice GmbH", "revenue": "2661.65", "orders": 4},
+    {"customer": "Frank GmbH", "revenue": "410",     "orders": 1}
+  ],
+  "row_count": 2,
+  "truncated": false,
+  "source": "sales-quack",
+  "statement_hash": "sha256:..."
+}
+```
 
 ## LangGraph agent demo
 
@@ -67,7 +87,7 @@ intermediate tool calls and the final answer.
 
 Copy [`claude-code/claude_config.example.json`](claude-code/claude_config.example.json)
 into your Claude Code MCP config (typically `~/.claude.json` or
-`./.mcp.json`). With the Compose stack running on `localhost:5000`, Claude
+`./.mcp.json`). With the Compose stack running on `localhost:5555`, Claude
 Code will list `revenue_by_customer` and `top_products` as callable tools.
 
 ## What's enforced where
@@ -96,9 +116,15 @@ authentication with a token-table macro.
 
 - **`toolbox` exits with `ATTACH ... Authorization failed`**: the
   `QUACK_TOKEN` in `.env` is not the same value the Quack server was
-  bootstrapped with. Both services read it from `.env` via Compose; check
-  that you don't have a stale Quack container with the previous token.
-  `docker compose down && docker compose up --build`.
+  bootstrapped with, OR you have edited `init.sql.tmpl` to activate the
+  `quack_authorization_function` before clients have ATTACHed (the macro
+  is also called for ATTACH's internal catalog queries). For the demo,
+  defer the activation: keep `init.sql.tmpl` as-shipped and run the
+  `SET GLOBAL` only after Toolbox has finished starting (see "Enabling
+  server-side authz" below).
+- **`localhost:5000` returns `AirTunes/...` or "empty reply"**: macOS
+  binds 5000 to AirPlay by default. The demo publishes on host port
+  `5555` to dodge it; use `http://localhost:5555`.
 - **`tail -f /dev/null | duckdb` exits immediately**: the DuckDB CLI in the
   image does not support `quack`. Confirm the `DUCKDB_VERSION` build arg in
   `quack-server/Dockerfile` matches a release where Quack is bundled in
@@ -107,6 +133,27 @@ authentication with a token-table macro.
   pins `toolbox-langchain>=0.4.0`. If your local PyPI mirror is older,
   override with `pip install --upgrade toolbox-langchain` in the
   Dockerfile or pin a specific version.
+
+### Enabling server-side authz (optional)
+
+Layer 3 of the defense-in-depth model (`quack_authorization_function`
+= `read_only`) is created but NOT activated by `init.sql.tmpl` because
+Quack invokes the macro on the catalog probe queries that `ATTACH`
+itself issues — activating it before the client ATTACH would break the
+client's startup. To exercise server-side rejection of destructive
+statements once Toolbox is up:
+
+```bash
+# After `docker compose up` reports "Server ready to serve!":
+docker exec duckdb-quack duckdb /data/analytics.duckdb -cmd \
+  "SET GLOBAL quack_authorization_function = 'read_only'" \
+  -cmd ".quit"
+```
+
+A subsequent `INSERT`/`UPDATE`/`DELETE` reaching the server will be
+rejected. The Toolbox-side tool-layer validator (Layer 1) already
+rejects such statements at config load, so this layer matters only as
+a backstop against bugs or future raw-SQL tool surfaces.
 
 ## Layout
 

@@ -1,15 +1,15 @@
 # MCP Toolbox configuration for the DuckDB/Quack demo.
 #
-# Defines one remote DuckDB source (the Quack server running in the sibling
-# container) and a curated read-only SQL tool that summarizes sales by
-# customer. Exposes one toolset, `analytics_readonly`, for agents to load.
+# The top-level `sources:` / `tools:` / `toolsets:` maps use the map key as
+# each entry's name and infer the kind from the parent. Do not also include
+# `kind:` or `name:` inside the entry — Toolbox rejects the duplicate.
 
 sources:
   sales-quack:
-    kind: source
-    name: sales-quack
     type: duckdb-quack
-    uri: quack:quack:9494                # service name "quack" on docker network
+    uri: quack:quack-server:9494         # service name "quack-server" on docker network
+                                         # (the hostname "quack" alone trips a parser
+                                         # bug in Quack — same name as the scheme).
     token: ${QUACK_TOKEN}
     disable_ssl: true
     attach_alias: remote
@@ -21,8 +21,6 @@ sources:
 
 tools:
   revenue_by_customer:
-    kind: tool
-    name: revenue_by_customer
     type: duckdb-sql
     source: sales-quack
     description: >-
@@ -45,8 +43,6 @@ tools:
       ORDER BY revenue DESC
 
   top_products:
-    kind: tool
-    name: top_products
     type: duckdb-sql
     source: sales-quack
     description: >-
