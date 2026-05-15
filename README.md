@@ -35,6 +35,15 @@ $EDITOR .env                    # set QUACK_TOKEN (and ANTHROPIC_API_KEY for the
 docker compose up --build       # builds and starts quack + toolbox
 ```
 
+> **Prefer an interactive walkthrough?** Open
+> [`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb) in
+> Jupyter. It drives the whole demo in 38 cells — `.env` setup,
+> Compose up, every toolset (curated queries, metadata discovery,
+> dev-only execute-sql), the reconnect path, distributed tracing
+> through Jaeger, the optional LangGraph agent, and the Claude
+> Code MCP config — and tears the stack down at the end. Needs
+> `requests` (already present in any standard Jupyter install).
+
 When `toolbox-duckdb-1` logs `Server ready to serve` (or similar), the MCP
 Toolbox is reachable on `localhost:5555`. Smoke-test the tool:
 
