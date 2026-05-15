@@ -261,3 +261,96 @@ plausible fixes the issue should propose:
 
 Attach the three reproducer forms above and the version probe
 (`toolbox --version`).
+
+## Distributed trace context does not propagate from toolbox-langchain into Toolbox
+
+**Status:** Reproduced on `toolbox-langchain >= 0.4.0` against Toolbox
+v1.2.0+dev as of May 2026. Not yet filed upstream.
+
+**Symptom:** Run the LangGraph demo in this repo against the
+OTel-instrumented stack (langgraph + toolbox + otel-collector +
+Jaeger). The agent emits an `agent.invoke` span plus the
+auto-instrumented HTTP spans for outgoing calls (Anthropic API,
+Toolbox `/mcp`). Toolbox emits its usual `toolbox/server/mcp/http`
+-> `tools/call <name>` -> `duckdb.query` span tree. In Jaeger these
+land on **two disjoint trace IDs** — one for the agent, one per
+MCP call to Toolbox — so the trace doesn't render as a single
+flame graph.
+
+The trace-client in [`trace-client/`](trace-client/) — which embeds
+`traceparent` in `_meta.traceparent` explicitly — *does* stitch
+across services on a single trace ID. So the wiring works; the
+gap is the SDK.
+
+**Cause:** Toolbox's MCP server extracts incoming W3C TraceContext
+exclusively from the JSON-RPC `params._meta.traceparent` field (see
+`internal/server/mcp.go` line ~150, function `extractTraceContext`),
+not from HTTP request headers. The MCP 2025-06-18 spec made
+`_meta.traceparent` / `_meta.tracestate` part of the official
+context-propagation convention.
+
+`toolbox-langchain` (and `toolbox-core` underneath) calls into
+Toolbox over MCP at `/mcp`, but does not inject the current
+active OTel span's traceparent into `_meta`. Generic Python OTel
+auto-instrumentation (`opentelemetry-instrumentation-requests`,
+`opentelemetry-instrumentation-httpx`) injects `traceparent` into
+the HTTP headers only — Toolbox ignores those.
+
+**Reproducer (full stack via `docker compose`):**
+
+```bash
+# 1. Bring up the demo with Jaeger
+docker compose up -d jaeger otel-collector quack-server toolbox
+
+# 2. Run the agent (needs ANTHROPIC_API_KEY in .env)
+docker compose --profile agent run --rm langgraph
+
+# 3. Look at the two services' recent traces in Jaeger:
+curl -s "http://localhost:16686/api/traces?service=langgraph-demo&limit=1&lookback=2m" \
+  | jq '.data[0].traceID'
+curl -s "http://localhost:16686/api/traces?service=duckdb-quack-demo&limit=3&lookback=2m" \
+  | jq '[.data[] | .traceID]'
+```
+
+Observed: the `langgraph-demo` trace ID is different from every
+`duckdb-quack-demo` trace ID produced during the agent run. With
+the trace-client (`docker compose --profile trace run --rm
+trace-client`) the trace IDs match.
+
+**Workaround:** None inside the SDK without modifying it. Demo users
+who need the agent's traces to stitch can:
+
+1. Patch toolbox-langchain locally to inject `_meta.traceparent`
+   from the current active span on every `tools/call`. ~10 lines
+   in `toolbox_core/client.py` (or wherever it constructs the JSON-
+   RPC body).
+2. Switch the agent to call Toolbox via a manually-instrumented
+   HTTP client like the [`trace-client`](trace-client/app.py) in
+   this repo, foregoing the higher-level SDK convenience.
+
+**To file upstream:** two places, two angles.
+
+1. **SDK fix — `googleapis/mcp-toolbox-sdk-python`.** Title:
+   `toolbox-langchain (and toolbox-core) should inject W3C
+   traceparent into _meta on outgoing MCP tools/call requests`.
+   The fix is straightforward: read the current OTel
+   `trace.get_current_span().get_span_context()`, format as
+   `00-<trace>-<span>-<flags>`, set
+   `params._meta.traceparent`. Bonus: also forward `tracestate`
+   if present. Cite MCP 2025-06-18 spec §`_meta`.
+
+2. **Toolbox-server fix — `googleapis/mcp-toolbox`.** Title:
+   `Also extract traceparent from HTTP headers, not only from
+   MCP _meta`. The change is to wrap the chi router with
+   `otelhttp.NewHandler(...)` (or call
+   `otel.GetTextMapPropagator().Extract(ctx, &headerCarrier{r.Header})`
+   in a middleware) before the existing `extractTraceContext`. This
+   would also enable trace propagation for callers of the REST
+   `/api/tool/<name>/invoke` endpoint, which currently has no
+   propagation path at all. Either change is non-invasive (adds a
+   secondary extraction; existing `_meta` extraction stays
+   authoritative since it runs after).
+
+The two issues are independent: fixing the SDK helps MCP clients;
+fixing the server helps REST callers and is a safety-net for any
+MCP SDK that hasn't adopted `_meta.traceparent` yet.
