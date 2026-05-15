@@ -1,0 +1,59 @@
+# Demo stack for the MCP Toolbox DuckDB / Quack adapter.
+#
+# Three services:
+#   - quack:    a Debian image running the DuckDB CLI with the Quack
+#               extension loaded, serving a small analytics dataset over
+#               the Quack remote protocol on port 9494.
+#   - toolbox:  the MCP Toolbox server built from the sibling
+#               mcp-toolbox-duckdb fork (the feat/duckdb-quack branch).
+#               Exposes the curated duckdb-sql tools at HTTP :5000.
+#   - langgraph: a tiny ReAct agent that loads the analytics_readonly
+#                toolset and asks Claude to answer a sample question.
+#
+# Required env vars (see .env.example): QUACK_TOKEN, ANTHROPIC_API_KEY.
+
+services:
+  quack:
+    build: ./quack-server
+    container_name: duckdb-quack
+    environment:
+      QUACK_TOKEN: ${QUACK_TOKEN:?set QUACK_TOKEN in .env}
+      QUACK_PORT: "9494"
+    ports:
+      - "9494:9494"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "9494"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  toolbox:
+    build:
+      context: ../mcp-toolbox-duckdb
+      dockerfile: Dockerfile
+    container_name: toolbox-duckdb
+    command:
+      - "serve"
+      - "--tools-file"
+      - "/cfg/tools.yaml"
+      - "--address"
+      - "0.0.0.0"
+    environment:
+      QUACK_TOKEN: ${QUACK_TOKEN:?set QUACK_TOKEN in .env}
+    volumes:
+      - ./tools.yaml:/cfg/tools.yaml:ro
+    ports:
+      - "5000:5000"
+    depends_on:
+      quack:
+        condition: service_healthy
+
+  langgraph:
+    build: ./langgraph
+    container_name: langgraph-demo
+    environment:
+      TOOLBOX_URL: http://toolbox:5000
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+    depends_on:
+      - toolbox
+    profiles: ["agent"]

@@ -1,0 +1,68 @@
+# MCP Toolbox configuration for the DuckDB/Quack demo.
+#
+# Defines one remote DuckDB source (the Quack server running in the sibling
+# container) and a curated read-only SQL tool that summarizes sales by
+# customer. Exposes one toolset, `analytics_readonly`, for agents to load.
+
+sources:
+  sales-quack:
+    kind: source
+    name: sales-quack
+    type: duckdb-quack
+    uri: quack:quack:9494                # service name "quack" on docker network
+    token: ${QUACK_TOKEN}
+    disable_ssl: true
+    attach_alias: remote
+    policy:
+      read_only: true
+      reject_multiple_statements: true
+      max_rows: 1000
+      timeout: 30s
+
+tools:
+  revenue_by_customer:
+    kind: tool
+    name: revenue_by_customer
+    type: duckdb-sql
+    source: sales-quack
+    description: >-
+      Return revenue and order-count for customers whose name matches a
+      case-insensitive pattern. The pattern is a plain substring; do not
+      include SQL wildcards yourself. Read-only and limited to the sales
+      mart.
+    parameters:
+      - name: customer_pattern
+        type: string
+        description: Case-insensitive customer name substring (no wildcards).
+    statement: |
+      SELECT
+        customer,
+        SUM(amount) AS revenue,
+        COUNT(*)    AS orders
+      FROM remote.sales
+      WHERE customer ILIKE '%' || ? || '%'
+      GROUP BY customer
+      ORDER BY revenue DESC
+
+  top_products:
+    kind: tool
+    name: top_products
+    type: duckdb-sql
+    source: sales-quack
+    description: >-
+      List the top products by total quantity sold across all orders.
+      Read-only and limited to the sales mart.
+    parameters: []
+    statement: |
+      SELECT
+        product,
+        SUM(qty) AS total_qty,
+        COUNT(DISTINCT customer) AS customer_count
+      FROM remote.orders
+      GROUP BY product
+      ORDER BY total_qty DESC
+
+toolsets:
+  analytics_readonly:
+    - revenue_by_customer
+    - top_products

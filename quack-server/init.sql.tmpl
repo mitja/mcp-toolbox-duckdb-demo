@@ -1,0 +1,29 @@
+-- Quack server init script. Rendered from this template at container start
+-- so QUACK_TOKEN can be injected from the environment.
+
+INSTALL quack FROM core_nightly;
+LOAD quack;
+
+-- Seed sample analytics data.
+.read /quack/seed.sql
+
+-- Read-only authorization macro. Activated AFTER quack_serve so its first
+-- call sees a configured server. (Activating before quack_serve breaks the
+-- internal catalog queries that clients issue at ATTACH time.)
+CREATE OR REPLACE MACRO read_only(sid, query) AS (
+    regexp_matches(upper(trim(query)), '^(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW)\b')
+);
+
+-- Start the Quack server. allow_other_hostname is required because
+-- containerized clients connect via the docker network host name, not
+-- 0.0.0.0. disable_ssl is true for this in-cluster demo; production
+-- deployments should terminate TLS at a reverse proxy.
+CALL quack_serve(
+    'quack:0.0.0.0:${QUACK_PORT}',
+    token := '${QUACK_TOKEN}',
+    allow_other_hostname := true,
+    disable_ssl := true
+);
+
+-- Activate read-only enforcement now that the server has bootstrapped.
+SET GLOBAL quack_authorization_function = 'read_only';
