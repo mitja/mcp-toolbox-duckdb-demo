@@ -110,6 +110,50 @@ catalog is intentionally incomplete (DuckDB does not push catalog
 enumeration through ATTACH), so `quack_query()` is the route that
 sees the live remote schema.
 
+## Development-only ad-hoc SQL (`analytics_dev`)
+
+The demo also exposes a third toolset, `analytics_dev`, with a single
+tool: `dev_duckdb_execute_sql`. This is a **dev-only** surface —
+intended for local exploration and human-in-the-loop debugging, **not
+for production agents** (spec §3 explicitly classifies a "let the LLM
+run arbitrary SQL" surface as a non-goal).
+
+The tool is gated behind `enabled: true` in `tools.yaml`: Toolbox
+refuses to start unless that field is explicitly present and true,
+and a WARN line is emitted to the container logs on every boot:
+
+```text
+WARN duckdb-execute-sql is enabled. This tool exposes an
+agent-supplied SQL surface and is intended for local development
+and human-in-the-loop debugging only; do not enable it for
+production agent toolsets. tool=dev_duckdb_execute_sql
+source=sales-quack
+```
+
+The same statement validator that `duckdb-sql` runs at config-load is
+applied here at every invocation — so destructive verbs are rejected
+before they reach the database. That's defense in depth, not a SQL
+sandbox; the real boundary remains the Quack server's authorization
+callback.
+
+```bash
+# Happy path
+curl -s -X POST http://localhost:5555/api/tool/dev_duckdb_execute_sql/invoke \
+    -d '{"sql": "SELECT count(*) AS n FROM remote.sales"}' \
+    | jq '.result | fromjson'
+
+# Destructive verbs come back as an AgentError envelope:
+#   {"result": "{\"error\":\"statement rejected by policy: ...\"}"}
+curl -s -X POST http://localhost:5555/api/tool/dev_duckdb_execute_sql/invoke \
+    -d '{"sql": "DROP TABLE remote.sales"}' \
+    | jq '.result | fromjson'
+```
+
+For production deployments, remove the `dev_duckdb_execute_sql` entry
+from `tools.yaml` entirely (or flip `enabled: true` to anything else;
+the server will refuse to start). The other toolsets
+(`analytics_readonly`, `analytics_metadata`) are unaffected.
+
 ## LangGraph agent demo
 
 ```bash

@@ -114,6 +114,25 @@ tools:
     schema: main
     table: sales
 
+  # ---------------------------------------------------------------
+  # Development tool — accepts an agent-supplied SQL string. Gated
+  # behind `enabled: true` and not part of any production toolset.
+  # Toolbox refuses to start if `enabled` is missing or false; with
+  # `enabled: true` it logs a WARN line on every boot. Per spec §3,
+  # this tool is NOT intended for production agents. The same
+  # statement validator that duckdb-sql runs at config-load is
+  # applied here at every invocation, so destructive verbs are
+  # rejected before they reach the database — but that's defense
+  # in depth, not a SQL sandbox.
+  # ---------------------------------------------------------------
+  dev_duckdb_execute_sql:
+    type: duckdb-execute-sql
+    source: sales-quack
+    description: >-
+      Run an arbitrary read-only SQL statement against the analytics
+      catalog. Development and human-in-the-loop debugging only.
+    enabled: true
+
 toolsets:
   # Query-oriented tools an agent uses to answer questions.
   analytics_readonly:
@@ -131,3 +150,8 @@ toolsets:
     - describe_sales
     - describe_orders
     - summarize_sales
+
+  # Development-only toolset. Loaded explicitly by a human operator's
+  # MCP client; never exposed to a production agent.
+  analytics_dev:
+    - dev_duckdb_execute_sql
