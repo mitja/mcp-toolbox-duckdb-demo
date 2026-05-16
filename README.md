@@ -645,8 +645,55 @@ telemetry_enabled=True)` (see [`langgraph/app.py`](langgraph/app.py));
 
 Copy [`claude-code/claude_config.example.json`](claude-code/claude_config.example.json)
 into your Claude Code MCP config (typically `~/.claude.json` or
-`./.mcp.json`). With the Compose stack running on `localhost:5555`, Claude
-Code will list `revenue_by_customer` and `top_products` as callable tools.
+`./.mcp.json`). With the Compose stack running on `localhost:5555`,
+Claude Code will list all twelve tools (the default `/mcp` endpoint
+exposes the full surface). To scope it to just one toolset, change
+the URL in the config from `http://localhost:5555/mcp` to
+`http://localhost:5555/mcp/<toolset_name>` — `analytics_readonly`,
+`analytics_metadata`, `inventory_readonly`, or `cross_catalog`
+(don't expose `analytics_dev` to a production agent).
+
+## Wiring Pi (pi.dev)
+
+[Pi](https://pi.dev) doesn't speak MCP natively, but several
+community extensions add it — the most "official" one is
+[`pi-mcp-extension`](https://pi.dev/packages/pi-mcp-extension)
+in Pi's package registry. Other options include
+[`scaryrawr/pi-mcp`](https://github.com/scaryrawr/pi-mcp) (reads
+`.mcp.json`, supports stdio + Streamable HTTP) and
+[`nicobailon/pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter)
+(token-efficient single-proxy-tool model — useful when an MCP
+server exposes many tools and you don't want them all in the
+system prompt).
+
+Copy [`pi/pi_config.example.json`](pi/pi_config.example.json) into
+your Pi config (project-level `.pi/mcp.json` or global
+`~/.pi/agent/mcp.json`). The example registers four MCP servers,
+each scoped to a different Toolbox toolset:
+
+| Server entry                  | Toolbox route                    | Lifecycle |
+|-------------------------------|----------------------------------|-----------|
+| `toolbox-analytics-readonly`  | `/mcp/analytics_readonly`        | `eager`   |
+| `toolbox-analytics-metadata`  | `/mcp/analytics_metadata`        | `eager`   |
+| `toolbox-inventory-readonly`  | `/mcp/inventory_readonly`        | `eager`   |
+| `toolbox-cross-catalog`       | `/mcp/cross_catalog`             | `lazy`    |
+
+`eager` servers auto-connect when Pi starts; `lazy` ones connect
+only on demand (Pi prompts before activating them). Drop any entry
+you don't want; the `analytics_dev` toolset (agent-supplied SQL)
+is intentionally not in the example — keep that one out of any
+agent surface.
+
+### Scoping any MCP client to a single toolset
+
+The path-based routing isn't Pi- or Claude-specific. Toolbox
+exposes `/mcp` (the default toolset = every registered tool) and
+`/mcp/<toolset_name>` (just that toolset's tools); any MCP
+client — Claude Code, Pi, LangChain's MCP adapter, the MCP
+Inspector — can be scoped to a single toolset just by pointing it
+at the appropriate URL. For agents that work better with a small
+focused tool list (most do), prefer the scoped endpoints over the
+catch-all `/mcp`.
 
 ## What's enforced where
 
@@ -740,7 +787,9 @@ a backstop against bugs or future raw-SQL tool surfaces.
 ├── notebooks/
 │   └── walkthrough.ipynb       # 40-cell interactive tour of the whole demo
 ├── claude-code/
-│   └── claude_config.example.json
+│   └── claude_config.example.json   # default /mcp (all tools); swap path to scope
+├── pi/
+│   └── pi_config.example.json       # four servers, each scoped to one toolset
 ├── docs/
 │   └── stack.svg               # architecture diagram (rendered at the top of this README)
 ├── .env.example

@@ -1,0 +1,25 @@
+{
+  "_comment": "Example .pi/mcp.json for the Pi coding agent (pi.dev), used by the pi-mcp-extension package and compatible community MCP clients (scaryrawr/pi-mcp, nicobailon/pi-mcp-adapter). Drop this in as `.pi/mcp.json` in your project (project-level scope) or `~/.pi/agent/mcp.json` (global scope). The four servers below each scope Pi to a different MCP Toolbox toolset by hitting /mcp/<toolset> — Toolbox routes those paths to the matching toolset; /mcp alone (no suffix) exposes the full default toolset (every registered tool). Pick whichever subset matches the role you want Pi to play; delete entries you do not want. The dev-only execute-sql tool (analytics_dev toolset) is intentionally NOT registered here.",
+  "mcpServers": {
+    "toolbox-analytics-readonly": {
+      "transport": "streamable-http",
+      "url": "http://localhost:5555/mcp/analytics_readonly",
+      "lifecycle": "eager"
+    },
+    "toolbox-analytics-metadata": {
+      "transport": "streamable-http",
+      "url": "http://localhost:5555/mcp/analytics_metadata",
+      "lifecycle": "eager"
+    },
+    "toolbox-inventory-readonly": {
+      "transport": "streamable-http",
+      "url": "http://localhost:5555/mcp/inventory_readonly",
+      "lifecycle": "eager"
+    },
+    "toolbox-cross-catalog": {
+      "transport": "streamable-http",
+      "url": "http://localhost:5555/mcp/cross_catalog",
+      "lifecycle": "lazy"
+    }
+  }
+}
