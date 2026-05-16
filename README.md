@@ -115,6 +115,12 @@ curl -s -X POST -H "$H" http://localhost:5555/api/tool/describe_sales/invoke    
 
 # Per-column statistics
 curl -s -X POST -H "$H" http://localhost:5555/api/tool/summarize_sales/invoke    -d '{}' | jq '.result | fromjson'
+
+# with mlr (or --omd or --ocsv)
+curl -sS -X POST -H "$H" \
+      http://localhost:5555/api/tool/describe_sales/invoke -d '{}' \
+    | jq -r '.result | fromjson | .rows' \
+    | mlr --ijson --opprint cat
 ```
 
 The metadata tools that target the remote DuckDB (everything except
@@ -152,13 +158,13 @@ callback.
 
 ```bash
 # Happy path
-curl -s -X POST http://localhost:5555/api/tool/dev_duckdb_execute_sql/invoke \
+curl -s -X -H 'Content-Type: application/json' POST http://localhost:5555/api/tool/dev_duckdb_execute_sql/invoke \
     -d '{"sql": "SELECT count(*) AS n FROM remote.sales"}' \
     | jq '.result | fromjson'
 
 # Destructive verbs come back as an AgentError envelope:
 #   {"result": "{\"error\":\"statement rejected by policy: ...\"}"}
-curl -s -X POST http://localhost:5555/api/tool/dev_duckdb_execute_sql/invoke \
+curl -s -X -H 'Content-Type: application/json' POST http://localhost:5555/api/tool/dev_duckdb_execute_sql/invoke \
     -d '{"sql": "DROP TABLE remote.sales"}' \
     | jq '.result | fromjson'
 ```
