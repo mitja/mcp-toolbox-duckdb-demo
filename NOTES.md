@@ -403,3 +403,92 @@ how every other HTTP framework handles a non-JSON body on a JSON
 endpoint. **(3)** is the least disruptive if backwards compatibility
 is a hard constraint. Attach the two-curl reproducer above and the
 toolbox version (`toolbox --version`).
+
+## Feature idea: record in-process DuckDB memory usage as OTel data
+
+**Status:** Not yet implemented. Improvement for the fork's
+duckdb-quack adapter; would land in
+`internal/sources/duckdbquack/instrumentation.go`.
+
+**Motivation:** Today the source emits five metrics around the
+`duckdb.query` span (duration, rows returned, errors, truncated,
+reattach) but says nothing about how much memory the in-process
+DuckDB is using or how close it is to its `memory_limit`. With
+multi-attach in place, the local-side buffer pool now matters
+more — cross-catalog joins (e.g. `product_orders_overview` in the
+demo) materialize both inputs locally, so an operator wants to
+graph "buffer pool used vs. limit" and "which queries grow the
+pool" without poking at DuckDB by hand.
+
+**Mechanism (already in DuckDB):** the `duckdb_memory()` table
+function returns per-subsystem usage:
+
+```sql
+SELECT tag, memory_usage_bytes, temporary_storage_bytes FROM duckdb_memory();
+-- BUFFER_MANAGER | 3145728 | 0
+-- HASH_TABLE     |  524288 | 0
+-- ORDER_BY       |       0 | 0
+-- ...
+```
+
+Plus `current_setting('memory_limit')` for the configured cap (a
+static value at any given moment).
+
+**Two recording shapes worth considering:**
+
+1. **OTel `ObservableGauge` per source** (`duckdb.memory.bytes`).
+   A callback runs the introspection query on each metric export
+   (default 60s). Dimensions: `toolbox.source.name`, optionally
+   `tag` for the per-subsystem breakdown. Operators graph
+   `memory.bytes / memory_limit.bytes` to see headroom over time.
+
+2. **Span attributes on every `duckdb.query`**
+   (`db.memory.bytes.before` / `after` /
+   `db.temporary_storage.bytes`). Per-query memory deltas show up
+   directly in Jaeger so you can see exactly which queries grow
+   the buffer pool or spill to disk. Cost: two extra small SELECTs
+   per tool invocation.
+
+**Specific gotcha for this adapter:** each duckdb-quack source has
+`SetMaxOpenConns(1)` because the ATTACH state lives on a single
+connection. A scheduled metric scrape competes with the user query
+for that conn. Three options:
+
+- (a) Short timeout + drop the scrape on contention (best-effort
+  observability).
+- (b) Bump the pool to 2 and re-run `LOAD quack` + `CREATE SECRET`
+  + `ATTACH` on the second conn too — including the reconnect
+  path. More work, more state.
+- (c) Skip the scheduled gauge entirely; only sample from inside
+  `RunSQL` as span attributes (so the conn-contention question
+  doesn't arise — the connection is already held for the user
+  query).
+
+**Recommendation:** start with **option 2 (span attributes), not the
+gauge.** Lower effort, inherits the existing reconnect/timeout
+discipline, and it's the answer to the question operators usually
+actually have ("which queries grew the buffer pool?"). Include
+`temporary_storage_bytes` so spill-to-disk events show up clearly
+in Jaeger. Also emit a one-shot `db.memory_limit.bytes` as a
+resource attribute (or per-source attribute on the first span) so
+the ratio is computable downstream.
+
+Add the periodic ObservableGauge later if a real need for
+time-series memory dashboards independent of query activity shows
+up — at that point pick option (a) or (b) based on whether the
+contention-induced gaps in the gauge are acceptable.
+
+**Suggested attribute names** (subject to OTel semconv updates;
+follow `db.*` and `db.temporary_storage.*` if a standard appears):
+
+- `db.memory.bytes.before` — `SUM(memory_usage_bytes)` snapshot
+  before the query runs.
+- `db.memory.bytes.after` — same snapshot after the query
+  completes (success path; on failure, capture before the error
+  return).
+- `db.temporary_storage.bytes` — `SUM(temporary_storage_bytes)`
+  delta over the query (or just `.after`; the value is monotonic
+  per query but the buffer pool is not).
+- `db.memory_limit.bytes` — `current_setting('memory_limit')` as
+  bytes, read once at source init and attached as a static span
+  attribute (or `Resource` attribute on the tracer provider).
