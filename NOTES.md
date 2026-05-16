@@ -492,3 +492,106 @@ follow `db.*` and `db.temporary_storage.*` if a standard appears):
 - `db.memory_limit.bytes` — `current_setting('memory_limit')` as
   bytes, read once at source init and attached as a static span
   attribute (or `Resource` attribute on the tracer provider).
+
+## Feature idea: federate across non-Quack backends via the in-process DuckDB
+
+**Status:** Not yet implemented. Improvement for the fork's
+duckdb-quack adapter; would generalize `additional_attachments` in
+`internal/sources/duckdbquack/duckdbquack.go`.
+
+**Motivation:** The multi-attach work we just landed lets one
+duckdb-quack source ATTACH several Quack servers and JOIN across
+them inside the in-process DuckDB. But the in-process DuckDB is
+not Quack-specific — DuckDB ships first-class extensions for
+talking to Postgres, MySQL, SQLite, Iceberg, Delta, S3, plus
+direct Parquet / CSV reads. If `additional_attachments` accepted
+those URIs too, a single `duckdb-sql` tool could JOIN a
+Quack-served fact table with a Postgres lookup table, an Iceberg
+snapshot in object storage, or a CSV in S3 — all optimized and
+executed by the in-process DuckDB.
+
+This is the same architectural pattern as multi-attach, just
+without the constraint that every attachment be a Quack server.
+
+**MCP Toolbox layer cannot federate across source types.** Each
+Toolbox tool is bound to one source (a `postgres-sql` tool talks
+to a `postgres` source, etc.); the tool executor only knows its
+one source. Federation has to happen *inside* a source — the
+duckdb-quack source's in-process DuckDB is the natural place for
+it because DuckDB is a real query engine, not just a connector.
+
+**What the adapter would need:**
+
+1. Generalize `additional_attachments` to accept arbitrary URI
+   schemes + per-type ATTACH options. Today validation forces a
+   `quack:` prefix; that becomes a per-type validator dispatched
+   by a new `type:` field (or by URI scheme).
+2. Per-type secret creation. Quack secrets use `(TYPE quack, TOKEN
+   '…')`; Postgres uses `(TYPE postgres, USER '…', PASSWORD '…',
+   HOST '…')`; S3 uses `(TYPE s3, KEY_ID '…', SECRET '…', REGION
+   '…')`. Each backend has its own field schema and its own
+   character-set / escaping concerns.
+3. INSTALL/LOAD per extension at source init (`INSTALL postgres
+   FROM core; LOAD postgres`). Avoid double-installing the same
+   extension across two attachments in the same source.
+4. Reconnect heuristics expanded. The current `needsReAttach`
+   substring matchers (`Invalid connection id`, "Failed to send
+   message", etc.) are Quack-specific. Each extension has its own
+   way of surfacing "remote is gone" — e.g., Postgres returns
+   `FATAL: terminating connection`. The retry path either needs
+   per-type matchers or a more conservative "always retry on
+   driver.ErrBadConn" stance for non-Quack attachments.
+
+**Trade-offs vs. our current Quack-only setup:**
+
+- **Pushdown varies wildly by extension.** Postgres scanner pushes
+  filters down reasonably; SQLite, CSV, and Parquet readers are
+  mostly full-scan + local filter. Cross-source joins where one
+  side does not push will pull a lot more across the wire.
+- **No server-side authz outside Quack.** We currently rely on
+  Quack's `read_only` macro as the real boundary. For Postgres /
+  MySQL you'd lean on the database user's `GRANT` privileges,
+  which the adapter cannot enforce — `policy.read_only` becomes
+  informational again.
+- **Memory pressure goes up.** Cross-source joins are
+  local-execution by definition (different physical backends), so
+  the Toolbox-side DuckDB has to materialize at least one side.
+  The `policy.max_rows` cap helps but is downstream of the join.
+- **Schema validation gets richer.** The `additional_attachments`
+  YAML shape is currently a small struct; with per-type options
+  it grows to a tagged union. Worth a careful design pass on the
+  ergonomics.
+
+**Recommendation:** treat this as a separate, later phase. Start
+with **one extension — Postgres** — because it is the most
+commonly requested federation target and has the best pushdown of
+the DuckDB extensions. Generalize the URI / secret plumbing for
+that single case first; once it works, adding MySQL / SQLite /
+Iceberg / S3 is mostly a matter of writing more per-type secret
+templates and validators. Do not try to generalize speculatively
+before having one working case.
+
+**Suggested config shape (illustrative):**
+
+```yaml
+sources:
+  combined-analytics:
+    type: duckdb-quack
+    uri: quack:sales-server:9494
+    token: ${QUACK_TOKEN}
+    attach_alias: sales_remote
+    additional_attachments:
+      - type: quack
+        uri: quack:inventory-server:9494
+        attach_alias: inventory_remote
+      - type: postgres
+        uri: "host=lookups-pg dbname=ref user=ro password=${PG_PW}"
+        attach_alias: lookup
+        extension:
+          install_from: core
+```
+
+The primary attachment stays as today (top-level fields) for
+backward compatibility; `additional_attachments` becomes the
+heterogeneous list where each entry's `type:` selects the secret
+template and ATTACH option set.
