@@ -1,12 +1,25 @@
 # Demo stack for the MCP Toolbox DuckDB / Quack adapter.
 #
-# Three services:
-#   - quack:    a Debian image running the DuckDB CLI with the Quack
+# Services:
+#   - quack-server: a Debian image running the DuckDB CLI with the Quack
 #               extension loaded, serving a small analytics dataset over
 #               the Quack remote protocol on port 9494.
 #   - toolbox:  the MCP Toolbox server built from the sibling
 #               mcp-toolbox-duckdb fork (the feat/duckdb-quack branch).
 #               Exposes the curated duckdb-sql tools at HTTP :5000.
+#   - otel-collector: an OpenTelemetry collector that receives traces and
+#               metrics from the toolbox and a trace-client, batches them,
+#               and exports them to Jaeger (and stdout for easy local debugging).
+#   - jaeger: the Jaeger all-in-one image, which receives OTLP from the
+#               collector and serves the Jaeger UI on http://localhost:16686.
+#
+# Optional services, gated by Docker Compose profiles:
+#   - inspector: the MCP Inspector, a web UI for exploring an MCP server's
+#               tools/resources/prompts and invoking them interactively.
+#   - trace-client: a tiny Go program that emits a test trace and makes one
+#               HTTP call to the toolbox. Useful for verifying that the
+#               OTLP instrumentation and Jaeger setup are working without
+#               needing to trigger the agent-based demo below.
 #   - langgraph: a tiny ReAct agent that loads the analytics_readonly
 #                toolset and asks Claude to answer a sample question.
 #
@@ -28,6 +41,28 @@ services:
       QUACK_PORT: "9494"
     ports:
       - "9494:9494"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "9494"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  # Second Quack server, same image, different seed mounted over the
+  # baked-in /quack/seed.sql. Wired as the `inventory-quack` source in
+  # tools.yaml. Exercises multi-source routing in Toolbox (each source
+  # has its own in-process DuckDB + ATTACH) and is hammered alongside
+  # sales-quack by the trace-load profile.
+  #
+  # No host port: the only thing that needs to reach it is Toolbox,
+  # which uses the docker-network hostname `quack-server-2`.
+  quack-server-2:
+    build: ./quack-server
+    container_name: duckdb-quack-2
+    environment:
+      QUACK_TOKEN: ${QUACK_TOKEN:?set QUACK_TOKEN in .env}
+      QUACK_PORT: "9494"
+    volumes:
+      - ./quack-server/seed-inventory.sql:/quack/seed.sql:ro
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "9494"]
       interval: 2s
@@ -99,6 +134,8 @@ services:
     depends_on:
       quack-server:
         condition: service_healthy
+      quack-server-2:
+        condition: service_healthy
       otel-collector:
         condition: service_started
 
@@ -143,6 +180,32 @@ services:
     depends_on:
       - toolbox
     profiles: ["trace"]
+
+  # Concurrent multi-source test. Reuses the trace-client image but
+  # overrides the entrypoint to run load_test.py, which fires
+  # N parallel MCP tools/call requests fanned out across both
+  # source DBs (sales-quack + inventory-quack), then polls Jaeger
+  # to verify every emitted trace landed AND each trace's span tree
+  # is properly stitched. Exits non-zero on any failure, so it
+  # doubles as a CI-style smoke test under concurrency.
+  #
+  # (Module is named load_test.py, not concurrent.py, because the
+  # latter would shadow the stdlib `concurrent.futures` package.)
+  trace-load:
+    build: ./trace-client
+    container_name: trace-load
+    entrypoint: ["python", "load_test.py"]
+    environment:
+      TOOLBOX_URL: http://toolbox:5000
+      JAEGER_URL: http://jaeger:16686
+      N_CONCURRENT: ${N_CONCURRENT:-20}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_SERVICE_NAME: trace-load
+    depends_on:
+      - toolbox
+      - jaeger
+    profiles: ["load"]
 
   langgraph:
     build: ./langgraph

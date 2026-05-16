@@ -19,6 +19,22 @@ sources:
       max_rows: 1000
       timeout: 30s
 
+  # Second Quack server, separate container (quack-server-2). Exercises
+  # multi-source routing: tools wired here ATTACH to a different remote
+  # DuckDB process from the sales-quack tools above. Used by the
+  # concurrent-load test in trace-client/concurrent.py.
+  inventory-quack:
+    type: duckdb-quack
+    uri: quack:quack-server-2:9494
+    token: ${QUACK_TOKEN}
+    disable_ssl: true
+    attach_alias: inventory_remote
+    policy:
+      read_only: true
+      reject_multiple_statements: true
+      max_rows: 1000
+      timeout: 30s
+
 tools:
   revenue_by_customer:
     type: duckdb-sql
@@ -57,6 +73,48 @@ tools:
       FROM remote.orders
       GROUP BY product
       ORDER BY total_qty DESC
+
+  # ---------------------------------------------------------------
+  # Inventory tools — wired to the second source (inventory-quack /
+  # quack-server-2). Used by the multi-source concurrent test in
+  # trace-client/concurrent.py.
+  # ---------------------------------------------------------------
+
+  low_stock_items:
+    type: duckdb-sql
+    source: inventory-quack
+    description: >-
+      List products whose current stock has fallen at or below their
+      reorder threshold. Read-only; reads from a separate Quack server
+      than the sales tools above.
+    parameters: []
+    statement: |
+      SELECT
+        category,
+        name,
+        stock_qty,
+        reorder_at,
+        unit_price
+      FROM inventory_remote.products
+      WHERE stock_qty <= reorder_at
+      ORDER BY (stock_qty * 1.0 / reorder_at), category, name
+
+  inventory_summary:
+    type: duckdb-sql
+    source: inventory-quack
+    description: >-
+      Per-category totals: number of distinct products, total units in
+      stock, average unit price.
+    parameters: []
+    statement: |
+      SELECT
+        category,
+        COUNT(*)                  AS sku_count,
+        SUM(stock_qty)            AS total_units,
+        ROUND(AVG(unit_price), 2) AS avg_unit_price
+      FROM inventory_remote.products
+      GROUP BY category
+      ORDER BY total_units DESC
 
   # ---------------------------------------------------------------
   # Metadata tools — let an agent discover the catalog before
@@ -155,3 +213,11 @@ toolsets:
   # MCP client; never exposed to a production agent.
   analytics_dev:
     - dev_duckdb_execute_sql
+
+  # Inventory tools wired to the second source. Loaded by the
+  # concurrent-load test (trace-client/concurrent.py) alongside the
+  # analytics_readonly tools to exercise multi-source routing under
+  # parallel requests.
+  inventory_readonly:
+    - low_stock_items
+    - inventory_summary

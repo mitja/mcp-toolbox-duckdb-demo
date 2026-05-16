@@ -12,18 +12,23 @@ What's running, top to bottom:
   `curl`/notebook against `/api/tool/<name>/invoke`, and your browser
   for the **Jaeger** (`:16686`) and **MCP Inspector** (`:6274`)
   web UIs.
-- **In-network clients (profile-gated)** — `trace-client` (`--profile
-  trace`, no LLM), `langgraph` (`--profile agent`, needs Anthropic API
+- **In-network clients (profile-gated)** — `trace-client`
+  (`--profile trace`, single-call OTel demo), `trace-load`
+  (`--profile load`, concurrent multi-source burst with PASS/FAIL
+  verifier), `langgraph` (`--profile agent`, needs Anthropic API
   key), `inspector` (`--profile inspect`, MCP Inspector UI + proxy).
 - **Toolbox** (`toolbox:5000`) — the MCP Toolbox server from the
-  fork, with an **in-process DuckDB** (CGO `duckdb-go`) that holds
-  the Quack `ATTACH`. The same statement validator runs at config-load
-  and per-invocation; OTel span `duckdb.query` plus 5 metrics emit on
-  every call.
-- **`quack-server` (`:9494`)** — Debian + DuckDB CLI + the Quack
-  extension, with the `read_only` authorization callback. The real
-  security boundary; any destructive statement that somehow gets past
-  Toolbox is refused here.
+  fork. One in-process DuckDB (CGO `duckdb-go`) per source, each
+  holding its own Quack `ATTACH`. The same statement validator runs
+  at config-load and per-invocation; OTel span `duckdb.query` plus 5
+  metrics emit on every call.
+- **`quack-server` + `quack-server-2` (`:9494`)** — two separate
+  DuckDB+Quack processes wired as the `sales-quack` and
+  `inventory-quack` sources. Both run the same image, just with a
+  different seed file mounted; both apply the `read_only`
+  authorization callback. The real security boundary — any
+  destructive statement that somehow gets past Toolbox is refused
+  here.
 - **`otel-collector` + `jaeger`** — always-on, receive spans/metrics
   from anything OTel-instrumented (Toolbox plus any active client).
 
@@ -435,6 +440,61 @@ older MCP SDKs) lives in [`NOTES.md`](NOTES.md).
 
 [mcphandler]: https://github.com/mitja/mcp-toolbox-duckdb/blob/feat/duckdb-quack/internal/server/mcp.go
 
+## Concurrent multi-source load test
+
+[`trace-client/load_test.py`](trace-client/load_test.py) fires N
+parallel MCP `tools/call` requests fanned out across both Quack
+sources — `sales-quack` (the always-on `quack-server`) and
+`inventory-quack` (a second container, `quack-server-2`, mounting
+[`quack-server/seed-inventory.sql`](quack-server/seed-inventory.sql)
+over the baked-in seed). Each request generates its own root span,
+embeds W3C `traceparent` in MCP `_meta`, and is fully independent.
+After the burst, the script polls the Jaeger HTTP API and asserts:
+
+1. Every request returned valid (non-error) JSON.
+2. Every emitted trace ID resolves to a trace that contains a
+   `duckdb.query` span (no dropped exports).
+3. Each trace's `duckdb.query` is a descendant of the corresponding
+   `client.invoke*` root span (no broken stitches under concurrency).
+
+The script exits non-zero on any failure, so it doubles as a smoke
+test you can drop into CI.
+
+```bash
+docker compose --profile load run --rm trace-load                 # N=20 (default)
+N_CONCURRENT=50 docker compose --profile load run --rm trace-load  # bump it
+```
+
+Sample output at N=50:
+
+```
+requests:   50 sent, 50 ok, 0 error
+wall time:  0.10s
+throughput: 521.9 req/s
+latency:    avg 0.040s  p50 0.035s  p95 0.079s  max 0.094s
+by tool:
+  inventory_summary         12 sent,  12 ok, row_count(s)=[7]
+  low_stock_items           12 sent,  12 ok, row_count(s)=[7]
+  revenue_by_customer       13 sent,  13 ok, row_count(s)=[1, 2]
+  top_products              13 sent,  13 ok, row_count(s)=[3]
+
+Jaeger lookup:
+  complete traces:    50/50    (contain duckdb.query)
+  spans stitched:     50/50    (duckdb.query under client.invoke*)
+
+result: PASS
+```
+
+A few notes:
+
+- Toolbox-side spans land a few seconds after the client spans (each
+  side has its own OTel batch flush + the collector batches in
+  between), so the verifier keeps re-fetching each trace until it
+  sees the `duckdb.query` span — up to a 60s budget.
+- `trace-load` reuses the `trace-client` image (overrides the
+  entrypoint) but does its own concurrent fan-out — the script lives
+  alongside the single-call demo for easy diffing.
+
 ## LangGraph agent demo
 
 ```bash
@@ -541,20 +601,22 @@ a backstop against bugs or future raw-SQL tool surfaces.
 
 ```
 .
-├── docker-compose.yaml         # always-on: quack-server, toolbox, otel-collector, jaeger
-│                               # profile-gated: trace-client, langgraph, inspector
-├── tools.yaml                  # MCP Toolbox source + tool config (3 toolsets)
+├── docker-compose.yaml         # always-on: quack-server, quack-server-2, toolbox, otel-collector, jaeger
+│                               # profile-gated: trace-client, trace-load, langgraph, inspector
+├── tools.yaml                  # MCP Toolbox source + tool config (4 toolsets, 2 sources)
 ├── quack-server/
 │   ├── Dockerfile              # Debian + DuckDB CLI + Quack
 │   ├── entrypoint.sh           # envsubst init.sql.tmpl, then duckdb
 │   ├── init.sql.tmpl           # INSTALL/LOAD quack, seed, authz, serve
-│   └── seed.sql                # ~30 rows across sales + orders
+│   ├── seed.sql                # baked into image — sales + orders (~30 rows)
+│   └── seed-inventory.sql      # mounted over seed.sql by quack-server-2 — products (~20 rows)
 ├── otel-collector/
 │   └── config.yaml             # OTLP receivers + jaeger forwarder + debug exporter
-├── trace-client/               # profile: trace  (Python, no LLM)
+├── trace-client/               # profiles: trace + load  (Python, no LLM)
 │   ├── Dockerfile
 │   ├── pyproject.toml
-│   └── app.py                  # Manual _meta.traceparent injection demo
+│   ├── app.py                  # Manual _meta.traceparent injection demo (one call)
+│   └── load_test.py            # Concurrent fan-out across both sources + Jaeger verifier
 ├── langgraph/                  # profile: agent  (Anthropic ReAct agent)
 │   ├── Dockerfile              # python:3.12-slim
 │   ├── pyproject.toml          # toolbox-langchain + langgraph + langchain
