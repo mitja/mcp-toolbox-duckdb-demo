@@ -363,20 +363,22 @@ implications:
 1. Hitting `/api/tool/<name>/invoke` (the REST convenience endpoint)
    never propagates trace context, regardless of what headers the
    client sets. The toolbox-side spans show up under a fresh trace ID.
-2. MCP clients must put `traceparent` in `_meta.traceparent` — the
-   typical OTel auto-instrumentation that just adds the HTTP header
-   is not sufficient.
+2. MCP clients must put `traceparent` in `_meta.traceparent`. The
+   typical OTel auto-instrumentation that just adds the HTTP
+   `traceparent` header is not sufficient on its own.
 
-The `trace-client` script does this explicitly. The `langgraph` demo
-relies on `toolbox-langchain` to propagate context; whether it does
-depends on the SDK version (the MCP 2025-06-18 spec made the `_meta`
-field standard, so a modern compliant SDK should). If your
-`langgraph-demo` traces show up under a separate trace from
-`duckdb-quack-demo`, that's the SDK not the wiring.
+`toolbox-langchain >= 1.0` (and `toolbox-core` underneath) injects
+`_meta.traceparent` automatically when constructed with
+`telemetry_enabled=True` — the `langgraph` demo does this, and the
+agent's `agent.invoke` span joins the same trace as the
+toolbox-side `duckdb.query` span (see the [LangGraph
+demo](#langgraph-agent-demo) for the expected hierarchy). The
+`trace-client` script demonstrates the same wiring without an LLM
+dependency.
 
-A writeup for an upstream issue requesting either HTTP-header
-extraction on `/mcp` or richer client-SDK propagation lives in
-[`NOTES.md`](NOTES.md).
+A writeup for an upstream issue requesting HTTP-header extraction on
+`/mcp` (as a defense-in-depth that also covers REST callers and
+older MCP SDKs) lives in [`NOTES.md`](NOTES.md).
 
 [mcphandler]: https://github.com/mitja/mcp-toolbox-duckdb/blob/feat/duckdb-quack/internal/server/mcp.go
 
@@ -391,12 +393,24 @@ to summarize revenue for customers matching "gmbh". It prints the
 intermediate tool calls and the final answer.
 
 With OTel exporter env vars in place (the Compose file sets them by
-default), the LangGraph process also emits an `agent.invoke` span and
-auto-instrumented spans around every outgoing HTTP call (Toolbox, the
-Anthropic API). They show up under service `langgraph-demo` in Jaeger.
-Whether they join the same trace as `duckdb-quack-demo` depends on
-whether `toolbox-langchain` propagates `_meta.traceparent` (see the
-"Distributed tracing" caveat above).
+default), the LangGraph process emits an `agent.invoke` span and
+auto-instrumented spans around every outgoing HTTP call (Toolbox,
+the Anthropic API). They show up under service `langgraph-demo` in
+Jaeger and stitch with the toolbox-side spans into a single trace:
+
+```
+langgraph-demo     agent.invoke
+langgraph-demo       POST                              (Anthropic API)
+langgraph-demo       tools/call revenue_by_customer    (MCP client span)
+duckdb-quack-demo      toolbox/server/mcp/http
+duckdb-quack-demo        tools/call revenue_by_customer
+duckdb-quack-demo          duckdb.query                ← our Go span
+```
+
+The stitch relies on `ToolboxClient(..., protocol=Protocol.MCP_LATEST,
+telemetry_enabled=True)` (see [`langgraph/app.py`](langgraph/app.py));
+`telemetry_enabled=True` is what makes the SDK inject
+`_meta.traceparent` into each MCP `tools/call`.
 
 ## Wiring Claude Code
 

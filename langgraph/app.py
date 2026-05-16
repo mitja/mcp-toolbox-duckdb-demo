@@ -23,22 +23,8 @@ Run with:
 """
 from __future__ import annotations
 
-import logging
 import os
 import sys
-
-
-class _MCPVersionFilter(logging.Filter):
-    """Drop the `mcp` lib's root-logger nag about a newer protocol version.
-
-    The message ("A newer version of MCP (YYYY-MM-DD) is available.
-    Please use Protocol.MCP_LATEST...") is emitted from inside
-    toolbox-langchain's MCP client; passing the protocol enum is not
-    plumbed through the toolbox SDK, so silence it here.
-    """
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return "newer version of MCP" not in record.getMessage()
 
 
 def setup_tracing() -> object | None:
@@ -79,13 +65,13 @@ def setup_tracing() -> object | None:
 
 
 def main() -> int:
-    logging.getLogger().addFilter(_MCPVersionFilter())
     tracer = setup_tracing()
 
     # Imports after setup_tracing so the instrumentation patches the
     # client classes before they're imported.
     from langchain.agents import create_agent
     from langchain_anthropic import ChatAnthropic
+    from toolbox_core.protocol import Protocol
     from toolbox_langchain import ToolboxClient
 
     toolbox_url = os.environ.get("TOOLBOX_URL", "http://toolbox:5000")
@@ -97,7 +83,18 @@ def main() -> int:
     print(f"toolbox: {toolbox_url}")
     print(f"question: {question}\n")
 
-    client = ToolboxClient(toolbox_url)
+    # telemetry_enabled=True is what makes the toolbox-core MCP transport
+    # inject `_meta.traceparent` into each tool call; Toolbox extracts
+    # that field and attaches the parent context, stitching the LangGraph
+    # -> Toolbox -> duckdb-quack spans into a single trace in Jaeger.
+    # Protocol.MCP_LATEST pins the newest protocol version the SDK knows
+    # about (2025-11-25) so the `mcp` lib does not log its
+    # "newer version available" nag at WARNING.
+    client = ToolboxClient(
+        toolbox_url,
+        protocol=Protocol.MCP_LATEST,
+        telemetry_enabled=True,
+    )
     tools = client.load_toolset("analytics_readonly")
     print(f"loaded {len(tools)} tools: {[t.name for t in tools]}\n")
 
