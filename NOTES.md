@@ -595,3 +595,120 @@ The primary attachment stays as today (top-level fields) for
 backward compatibility; `additional_attachments` becomes the
 heterogeneous list where each entry's `type:` selects the secret
 template and ATTACH option set.
+
+## Pattern: federate non-DuckDB backends *inside* the remote Quack server
+
+**Status:** Not a feature to build; a deployment pattern worth
+recording. No code changes in the fork required — the Quack
+server's own DuckDB does the work.
+
+**Motivation:** The previous note ("federate across non-Quack
+backends via the in-process DuckDB") considers federating from the
+Toolbox-side adapter. The opposite shape is to push the
+heterogeneous attachments *down* into the remote Quack server's
+DuckDB — anything DuckDB can ATTACH, the Quack server can ATTACH
+— and then the Toolbox client sees one unified `quack:` endpoint.
+This is often the better architectural fit and needs zero adapter
+code changes today.
+
+**How it looks on the Quack server side** (illustrative, lives in
+the operator's Quack `init.sql`, not in this repo):
+
+```sql
+INSTALL postgres FROM core;
+LOAD postgres;
+ATTACH 'host=lookups-pg user=ro password=...' AS pg_lookups (TYPE postgres);
+
+INSTALL iceberg FROM core;
+LOAD iceberg;
+ATTACH 's3://bucket/warehouse/' AS lake (TYPE iceberg);
+
+-- then start serving as usual
+CALL quack_serve('quack:0.0.0.0:9494', token := '...', ...);
+```
+
+**On the Toolbox client side:** nothing changes. One
+`ATTACH 'quack:remote:9494' AS remote` brings in everything the
+remote server has, including the federated catalogs. A
+`duckdb-sql` tool can then JOIN across them in one statement:
+
+```sql
+SELECT s.customer, l.region, SUM(s.amount) AS revenue
+FROM remote.sales s
+JOIN remote.pg_lookups.public.customer_region l ON l.customer = s.customer
+GROUP BY s.customer, l.region
+ORDER BY revenue DESC
+```
+
+**Why this is often the preferable shape:**
+
+- **One ATTACH on the client.** No adapter changes — the
+  multi-attach work already covers the multi-server case, and
+  this puts the heterogeneous-backend complexity on the server
+  side where it belongs.
+- **Authz stays unified.** The `quack_authorization_function`
+  (`read_only` macro) runs at the Quack server's SQL boundary, so
+  it sees and authorizes *all* queries including those that reach
+  into the attached Postgres / Iceberg / etc. One enforcement
+  point for everything; no per-backend ACL juggling on the client.
+- **Pushdown stacks naturally.** The client DuckDB pushes filters
+  to Quack; Quack's DuckDB pushes the per-extension filters into
+  the backend (Postgres / Iceberg / S3). Each hop's optimizer
+  cooperates — assuming the underlying extension supports it
+  (Postgres yes; CSV / Parquet less so).
+- **No new secret types in the Toolbox client.** Backend
+  credentials live on the Quack server's machine. The Toolbox
+  process only ever sees `(TYPE quack, TOKEN '…')` and never
+  handles Postgres / S3 credentials directly.
+
+**Caveats worth knowing:**
+
+- **Quack needs to expose nested catalogs cleanly.** Not
+  rigorously confirmed: DuckDB's catalog model surfaces every
+  attached DB under its alias, so `remote.pg_lookups.public.users`
+  *should* be reachable through Quack — but Quack's catalog
+  enumeration may only advertise the remote's `main` database. If
+  that turns out to be the case, the workaround is to expose
+  backend tables as **views** in the remote's `main` schema:
+
+  ```sql
+  CREATE VIEW main.users AS SELECT * FROM pg_lookups.public.users;
+  ```
+
+  Views in `main` are always advertised through Quack, and the
+  view body still pushes down to Postgres at execution time. File
+  a Quack issue if nested-catalog enumeration is broken — that's
+  the cleaner long-term fix.
+
+- **Pushdown is not guaranteed at every hop.** A complex predicate
+  that DuckDB can push directly to Postgres might not survive the
+  Quack hop. `EXPLAIN` on the client side shows whether the filter
+  made it across.
+
+- **You lose the per-backend process isolation** you get by
+  running separate Quack servers. One slow Postgres query on the
+  federated server contends with the in-process DuckDB's buffer
+  pool and CPU for *every* query against that Quack server.
+
+- **Authentication for the backend lives in the Quack server's
+  init**, not in `tools.yaml`. That's fine for credentials that
+  should not leave the data-plane machine, but means the
+  Toolbox-side config can no longer document the full data lineage
+  on its own — operators have to look in two places.
+
+**Comparison with the local-side alternative:**
+
+| Pattern                                         | Where federation runs       | Adapter changes needed |
+|-------------------------------------------------|-----------------------------|------------------------|
+| Multi-attach (shipped)                          | Toolbox-side DuckDB         | None (already shipped) |
+| Heterogeneous local attachments                 | Toolbox-side DuckDB         | Generalize `additional_attachments` (NOTES entry above) |
+| **Heterogeneous remote attachments via Quack**  | **Quack server-side DuckDB** | **None — server-side init.sql change only** |
+
+**Recommendation for the demo / docs:** when this pattern comes
+up in practice, prefer the server-side ATTACH path unless the
+operator has a hard reason to do federation on the Toolbox side
+(e.g., the Toolbox box has credentials the Quack box doesn't, or
+the federation needs to happen across multiple Quack servers each
+without write access to the others' init.sql). If we ever add a
+demo for this, a third `quack-server-3` with a tiny Postgres
+sidecar ATTACHed would be the minimum-viable example.
