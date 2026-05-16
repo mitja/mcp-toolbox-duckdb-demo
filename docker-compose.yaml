@@ -67,6 +67,7 @@ services:
       - "--address"
       - "0.0.0.0"
       - "--enable-api"
+      - "--ui"
       - "--log-level"
       - "DEBUG"
       # `--telemetry-otlp` wants a host:port, NOT a URL. Toolbox builds the
@@ -159,3 +160,27 @@ services:
     depends_on:
       - toolbox
     profiles: ["agent"]
+
+  # MCP Inspector: a web UI for exploring an MCP server's
+  # tools/resources/prompts and invoking them interactively. Useful
+  # for sanity-checking the wire-level shape of what Toolbox
+  # publishes at /mcp, independent of any agent or SDK.
+  #
+  # DANGEROUSLY_OMIT_AUTH disables the inspector's session-token
+  # gate, which is fine for a localhost demo but not for anything
+  # exposed beyond the loopback interface. Remove the env var (and
+  # `docker compose logs inspector | grep token` for the generated
+  # token) before binding to a non-loopback address.
+  inspector:
+    image: ghcr.io/modelcontextprotocol/inspector:0.21.2-hotfix-3
+    container_name: mcp-inspector
+    environment:
+      HOST: "0.0.0.0"
+      DANGEROUSLY_OMIT_AUTH: "true"
+      MCP_AUTO_OPEN_ENABLED: "false"
+    ports:
+      - "6274:6274" # UI
+      - "6277:6277" # proxy (UI -> proxy -> MCP server)
+    depends_on:
+      - toolbox
+    profiles: ["inspect"]

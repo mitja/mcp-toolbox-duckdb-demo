@@ -82,6 +82,50 @@ unwraps it. Example output:
 }
 ```
 
+## Browse tools with MCP Inspector
+
+The [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
+is a web UI for poking at any MCP server: list tools/resources/prompts,
+inspect each one's schema, fill in parameters, and run a tool call —
+all without an LLM or SDK in the loop. The Compose file ships it as
+a profile-gated service so it does not start by default.
+
+```bash
+docker compose --profile inspect up -d inspector
+```
+
+Then open:
+
+```
+http://localhost:6274/?transport=streamable-http&serverUrl=http%3A%2F%2Ftoolbox%3A5000%2Fmcp
+```
+
+The query params pre-fill the connection form with **Transport Type
+= Streamable HTTP** and **URL = `http://toolbox:5000/mcp`**. Click
+**Connect**, then **List Tools** in the left pane. You should see
+all eight tools — `revenue_by_customer`, `top_products`,
+`list_catalogs`, `list_remote_schemas`, `list_remote_tables`,
+`describe_sales`, `describe_orders`, `summarize_sales` — with their
+input schemas and descriptions. Pick one, fill in params, and click
+**Run Tool** to see the JSON response shape live.
+
+A few notes:
+
+- The URL is `http://toolbox:5000/mcp` (the in-network hostname),
+  **not** `http://localhost:5555/mcp`. The Inspector's web UI sends
+  the URL to a proxy process inside the inspector container, which
+  is the side that makes the connection — `localhost` from there
+  resolves to the inspector itself, not Toolbox.
+- The Compose service sets `DANGEROUSLY_OMIT_AUTH=true` so the UI
+  is reachable without a session token. Fine for a localhost demo;
+  drop the env var (and grab the auto-generated token from
+  `docker compose logs inspector`) before binding ports 6274/6277
+  to anything but loopback.
+- The Inspector's `tools/call` requests go through Toolbox just
+  like an SDK or `curl`, so they hit the same policy validator,
+  row caps, and Quack authorization callback you see exercised
+  elsewhere in this demo.
+
 ## Metadata tools
 
 The demo `tools.yaml` exposes two toolsets:
