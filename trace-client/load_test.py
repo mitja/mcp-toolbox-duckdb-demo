@@ -45,15 +45,25 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 
-# Fan out across both sources. Each entry is (tool_name,
+# Fan out across all three sources. Each entry is (tool_name,
 # kwargs_factory) — the factory returns a fresh dict per call so we
 # vary the customer_pattern without sharing mutable state.
+#
+# Mix:
+#   - 2 single-source sales tools (push down to quack-server),
+#   - 2 single-source inventory tools (push down to quack-server-2),
+#   - 1 multi-attach tool (combined-analytics): joins inventory.products
+#     with sales.orders in one query, executed locally by the Toolbox-
+#     side DuckDB after rows stream from both remotes. Includes it
+#     deliberately so the latency stats and Jaeger spans show the
+#     local-execution path next to the pushdown path.
 CUSTOMER_PATTERNS = ["gmbh", "corp", "ag", "sarl", "ltd"]
 TASKS = [
-    ("revenue_by_customer", lambda: {"customer_pattern": random.choice(CUSTOMER_PATTERNS)}),
-    ("top_products",        lambda: {}),
-    ("low_stock_items",     lambda: {}),
-    ("inventory_summary",   lambda: {}),
+    ("revenue_by_customer",     lambda: {"customer_pattern": random.choice(CUSTOMER_PATTERNS)}),
+    ("top_products",            lambda: {}),
+    ("low_stock_items",         lambda: {}),
+    ("inventory_summary",       lambda: {}),
+    ("product_orders_overview", lambda: {}),
 ]
 
 
@@ -122,7 +132,7 @@ def invoke(tracer: trace.Tracer, toolbox: str, tool: str, args: dict, req_id: in
 
 def run_burst(tracer: trace.Tracer, toolbox: str, n: int) -> list[Result]:
     print(f"firing {n} concurrent calls across {len(TASKS)} tools "
-          f"(2 sources: sales-quack, inventory-quack)...")
+          f"(3 sources: sales-quack, inventory-quack, combined-analytics)...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
         futs = []
         # Round-robin across tools so each tool gets ~n/4 calls.

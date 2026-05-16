@@ -121,11 +121,13 @@ http://localhost:6274/?transport=streamable-http&serverUrl=http%3A%2F%2Ftoolbox%
 The query params pre-fill the connection form with **Transport Type
 = Streamable HTTP** and **URL = `http://toolbox:5000/mcp`**. Click
 **Connect**, then **List Tools** in the left pane. You should see
-all eight tools — `revenue_by_customer`, `top_products`,
+all twelve tools — `revenue_by_customer`, `top_products`,
+`low_stock_items`, `inventory_summary`, `product_orders_overview`,
 `list_catalogs`, `list_remote_schemas`, `list_remote_tables`,
-`describe_sales`, `describe_orders`, `summarize_sales` — with their
-input schemas and descriptions. Pick one, fill in params, and click
-**Run Tool** to see the JSON response shape live.
+`describe_sales`, `describe_orders`, `summarize_sales`, and the
+dev-only `dev_duckdb_execute_sql` — with their input schemas and
+descriptions. Pick one, fill in params, and click **Run Tool** to
+see the JSON response shape live.
 
 A few notes:
 
@@ -146,11 +148,13 @@ A few notes:
 
 ## Metadata tools
 
-The demo `tools.yaml` exposes two toolsets:
+The demo `tools.yaml` exposes five toolsets across three sources
+(`sales-quack`, `inventory-quack`, and the multi-attach
+`combined-analytics`):
 
 - **`analytics_readonly`** — `revenue_by_customer`, `top_products`. The
   curated, parameterized queries an agent uses to answer questions
-  about the data.
+  about the sales data.
 - **`analytics_metadata`** — `list_catalogs`, `list_remote_schemas`,
   `list_remote_tables`, `describe_sales`, `describe_orders`,
   `summarize_sales`. The discovery tools an agent uses to learn the
@@ -158,6 +162,18 @@ The demo `tools.yaml` exposes two toolsets:
   the agent's perspective — schema/table scope is baked into
   `tools.yaml` so deployment-time RBAC, not runtime tool calls,
   controls what the agent can see.
+- **`inventory_readonly`** — `low_stock_items`, `inventory_summary`.
+  Curated read-only tools against the second Quack server.
+- **`cross_catalog`** — `product_orders_overview`. The single
+  cross-catalog tool that joins inventory products with sales
+  orders inside one in-process DuckDB. See [Cross-catalog queries
+  and pushdown](#cross-catalog-queries-and-pushdown) for why this
+  one is special.
+- **`analytics_dev`** — `dev_duckdb_execute_sql`, the agent-supplied
+  ad-hoc SQL tool. Gated behind `enabled: true` and not loaded
+  unless explicitly attached. See
+  [Development-only ad-hoc SQL](#development-only-ad-hoc-sql-analytics_dev)
+  below.
 
 Smoke-test the metadata tools through the HTTP API:
 
@@ -194,8 +210,8 @@ sees the live remote schema.
 
 ## Development-only ad-hoc SQL (`analytics_dev`)
 
-The demo also exposes a third toolset, `analytics_dev`, with a single
-tool: `dev_duckdb_execute_sql`. This is a **dev-only** surface —
+The `analytics_dev` toolset contains a single tool:
+`dev_duckdb_execute_sql`. This is a **dev-only** surface —
 intended for local exploration and human-in-the-loop debugging, **not
 for production agents** (spec §3 explicitly classifies a "let the LLM
 run arbitrary SQL" surface as a non-goal).
@@ -234,7 +250,8 @@ curl -s -X POST -H 'Content-Type: application/json' http://localhost:5555/api/to
 For production deployments, remove the `dev_duckdb_execute_sql` entry
 from `tools.yaml` entirely (or flip `enabled: true` to anything else;
 the server will refuse to start). The other toolsets
-(`analytics_readonly`, `analytics_metadata`) are unaffected.
+(`analytics_readonly`, `analytics_metadata`, `inventory_readonly`,
+`cross_catalog`) are unaffected.
 
 ## Rendering JSON output as tables
 
@@ -447,13 +464,15 @@ older MCP SDKs) lives in [`NOTES.md`](NOTES.md).
 ## Concurrent multi-source load test
 
 [`trace-client/load_test.py`](trace-client/load_test.py) fires N
-parallel MCP `tools/call` requests fanned out across both Quack
-sources — `sales-quack` (the always-on `quack-server`) and
-`inventory-quack` (a second container, `quack-server-2`, mounting
-[`quack-server/seed-inventory.sql`](quack-server/seed-inventory.sql)
-over the baked-in seed). Each request generates its own root span,
-embeds W3C `traceparent` in MCP `_meta`, and is fully independent.
-After the burst, the script polls the Jaeger HTTP API and asserts:
+parallel MCP `tools/call` requests fanned out across **five tools
+spanning all three sources** — two against `sales-quack`
+(`revenue_by_customer`, `top_products`), two against
+`inventory-quack` (`low_stock_items`, `inventory_summary`), and one
+against `combined-analytics` (`product_orders_overview`, the
+cross-catalog JOIN that runs locally after rows stream from both
+Quack servers). Each request generates its own root span, embeds
+W3C `traceparent` in MCP `_meta`, and is fully independent. After
+the burst, the script polls the Jaeger HTTP API and asserts:
 
 1. Every request returned valid (non-error) JSON.
 2. Every emitted trace ID resolves to a trace that contains a
@@ -469,25 +488,35 @@ docker compose --profile load run --rm trace-load                 # N=20 (defaul
 N_CONCURRENT=50 docker compose --profile load run --rm trace-load  # bump it
 ```
 
-Sample output at N=50:
+Sample output at N=25:
 
 ```
-requests:   50 sent, 50 ok, 0 error
-wall time:  0.10s
-throughput: 521.9 req/s
-latency:    avg 0.040s  p50 0.035s  p95 0.079s  max 0.094s
+firing 25 concurrent calls across 5 tools (3 sources: sales-quack, inventory-quack, combined-analytics)...
+
+requests:   25 sent, 25 ok, 0 error
+wall time:  0.09s
+throughput: 293.0 req/s
+latency:    avg 0.056s  p50 0.056s  p95 0.074s  max 0.076s
 by tool:
-  inventory_summary         12 sent,  12 ok, row_count(s)=[7]
-  low_stock_items           12 sent,  12 ok, row_count(s)=[7]
-  revenue_by_customer       13 sent,  13 ok, row_count(s)=[1, 2]
-  top_products              13 sent,  13 ok, row_count(s)=[3]
+  inventory_summary          5 sent,   5 ok, row_count(s)=[7]
+  low_stock_items            5 sent,   5 ok, row_count(s)=[7]
+  product_orders_overview    5 sent,   5 ok, row_count(s)=[20]
+  revenue_by_customer        5 sent,   5 ok, row_count(s)=[1, 2]
+  top_products               5 sent,   5 ok, row_count(s)=[3]
 
 Jaeger lookup:
-  complete traces:    50/50    (contain duckdb.query)
-  spans stitched:     50/50    (duckdb.query under client.invoke*)
+  complete traces:    25/25    (contain duckdb.query)
+  spans stitched:     25/25    (duckdb.query under client.invoke*)
 
 result: PASS
 ```
+
+`product_orders_overview` returns 20 rows because the inventory seed
+has 20 products and the tool LEFT JOINs each one with sales orders;
+the other four tools return at most a handful of rows because they
+aggregate. The local-execution path (the cross-catalog tool) shows
+up alongside the pushdown path in the same Jaeger trace list — easy
+to compare `duckdb.query` durations side-by-side.
 
 A few notes:
 
@@ -690,7 +719,7 @@ a backstop against bugs or future raw-SQL tool surfaces.
 .
 ├── docker-compose.yaml         # always-on: quack-server, quack-server-2, toolbox, otel-collector, jaeger
 │                               # profile-gated: trace-client, trace-load, langgraph, inspector
-├── tools.yaml                  # MCP Toolbox source + tool config (4 toolsets, 2 sources)
+├── tools.yaml                  # MCP Toolbox source + tool config (5 toolsets, 3 sources)
 ├── quack-server/
 │   ├── Dockerfile              # Debian + DuckDB CLI + Quack
 │   ├── entrypoint.sh           # envsubst init.sql.tmpl, then duckdb
