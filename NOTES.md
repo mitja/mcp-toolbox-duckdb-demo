@@ -354,3 +354,78 @@ who need the agent's traces to stitch can:
 The two issues are independent: fixing the SDK helps MCP clients;
 fixing the server helps REST callers and is a safety-net for any
 MCP SDK that hasn't adopted `_meta.traceparent` yet.
+
+## `/api/tool/<name>/invoke` returns empty 200 when `Content-Type` is missing
+
+**Status:** Reproduced on Toolbox v1.2.0+dev as of May 2026. Not yet
+filed upstream.
+
+**Symptom:** Posting a JSON body to a tool's REST invoke endpoint
+without `Content-Type: application/json` succeeds with HTTP 200 but
+returns an **empty response body**. The tool never actually runs —
+nothing in toolbox logs at INFO/DEBUG, no `duckdb.query` span in
+the OTel collector, no row data. The user sees `jq: error (at
+<stdin>:0): Cannot index empty string` (or silence) and has no
+hint about what went wrong.
+
+It bit this demo's README when the metadata-tool curl examples
+omitted the header for a parameterless tool. Curl's `-d` flag
+defaults the Content-Type to `application/x-www-form-urlencoded`
+when no `-H` is set, and Toolbox's request handler treats that as
+a body it cannot parse — but returns success anyway.
+
+**Cause:** Toolbox's `/api/tool/.../invoke` handler decodes the
+request body as JSON only when the Content-Type advertises that.
+For other content types (the curl-bare-`-d` default included), the
+handler short-circuits without invoking the tool. The 200 response
+appears to come from a successful but no-op code path rather than
+from a 400/415 rejection.
+
+**Reproducer:**
+
+```bash
+# WITHOUT the header — HTTP 200, empty body, tool does not run
+curl -sS -i -X POST http://localhost:5555/api/tool/list_catalogs/invoke -d '{}'
+
+# WITH the header — HTTP 200, spec §7 JSON envelope, tool runs
+curl -sS -X POST http://localhost:5555/api/tool/list_catalogs/invoke \
+    -H 'Content-Type: application/json' -d '{}' \
+  | jq '.result | fromjson | {row_count, catalogs: [.rows[].catalog_name]}'
+```
+
+The two requests differ only in the header.
+
+**Workaround:** Always send `Content-Type: application/json`.
+Higher-level clients usually do this automatically (Python's
+`requests.post(url, json=...)`, JavaScript `fetch` with `JSON.stringify`
++ explicit header, Go's `net/http` with `Set("Content-Type", ...)`),
+so this is mostly a footgun for shell users hand-rolling curl
+invocations. Updated this repo's README to set the header in every
+example after rediscovering the issue.
+
+**To file upstream:** <https://github.com/googleapis/mcp-toolbox>.
+Title: `POST /api/tool/<name>/invoke returns empty 200 instead of
+400/415 when Content-Type is not application/json`. Three plausible
+fixes the issue should propose:
+
+1. **Strict:** return HTTP 415 (Unsupported Media Type) when the
+   request has a body but no acceptable Content-Type. Standard and
+   loud — the caller sees the problem immediately. Slight backwards-
+   incompatibility risk for any caller that was relying on the
+   silent-no-op behavior (unlikely but possible).
+
+2. **Permissive:** sniff the body. If it parses as JSON regardless
+   of the declared Content-Type, run the tool. Easy on shell users;
+   adds a tiny bit of magic that may surprise readers of the code.
+
+3. **Loud no-op:** keep accepting the request but write a WARN log
+   line (`"empty body parse: content-type %q not handled"`) so the
+   silent-no-op is at least discoverable from the server side.
+   Minimal blast radius, surfaces the issue without breaking
+   anything.
+
+Of the three, **(1)** is the cleanest API-design choice and matches
+how every other HTTP framework handles a non-JSON body on a JSON
+endpoint. **(3)** is the least disruptive if backwards compatibility
+is a hard constraint. Attach the two-curl reproducer above and the
+toolbox version (`toolbox --version`).
