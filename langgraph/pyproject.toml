@@ -5,7 +5,10 @@ description = "LangGraph demo agent for the MCP Toolbox DuckDB/Quack adapter."
 requires-python = ">=3.11"
 dependencies = [
     "toolbox-langchain>=0.4.0",
-    "langgraph>=0.6.0",
+    # langgraph>=1.0 deprecated langgraph.prebuilt.create_react_agent
+    # in favour of langchain.agents.create_agent; pin both accordingly.
+    "langgraph>=1.0",
+    "langchain>=1.0",
     "langchain-anthropic>=0.3.0",
     # OTel: same SDK + OTLP HTTP exporter as the trace-client, plus the
     # three instrumentation packages that cover the libraries

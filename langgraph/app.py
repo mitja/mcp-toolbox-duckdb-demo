@@ -23,8 +23,22 @@ Run with:
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
+
+
+class _MCPVersionFilter(logging.Filter):
+    """Drop the `mcp` lib's root-logger nag about a newer protocol version.
+
+    The message ("A newer version of MCP (YYYY-MM-DD) is available.
+    Please use Protocol.MCP_LATEST...") is emitted from inside
+    toolbox-langchain's MCP client; passing the protocol enum is not
+    plumbed through the toolbox SDK, so silence it here.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "newer version of MCP" not in record.getMessage()
 
 
 def setup_tracing() -> object | None:
@@ -65,12 +79,13 @@ def setup_tracing() -> object | None:
 
 
 def main() -> int:
+    logging.getLogger().addFilter(_MCPVersionFilter())
     tracer = setup_tracing()
 
     # Imports after setup_tracing so the instrumentation patches the
     # client classes before they're imported.
+    from langchain.agents import create_agent
     from langchain_anthropic import ChatAnthropic
-    from langgraph.prebuilt import create_react_agent
     from toolbox_langchain import ToolboxClient
 
     toolbox_url = os.environ.get("TOOLBOX_URL", "http://toolbox:5000")
@@ -87,7 +102,7 @@ def main() -> int:
     print(f"loaded {len(tools)} tools: {[t.name for t in tools]}\n")
 
     model = ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
-    agent = create_react_agent(model, tools)
+    agent = create_agent(model, tools)
 
     def run() -> dict:
         return agent.invoke({"messages": [("user", question)]})
