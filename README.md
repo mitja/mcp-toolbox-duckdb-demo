@@ -4,6 +4,9 @@ End-to-end demo stack for the **MCP Toolbox DuckDB / Quack adapter** that
 lives in the sibling fork [`mitja/mcp-toolbox-duckdb`](https://github.com/mitja/mcp-toolbox-duckdb)
 (branch `feat/duckdb-quack`).
 
+> [!NOTE]
+> This repository and the DuckDB / Quack adapter in the sibling fork were developed with [Claude Code](https://claude.com/claude-code) (Anthropic's agentic CLI, Opus 4.7 at `xhigh` reasoning) doing the bulk of the iterative work — design discussions, the Go source/tool packages, integration tests, the Compose stack, the observability + load-test scaffolding, the docs, and this diagram — under human review and direction. The upstream contribution path (`googleapis/mcp-toolbox`) is human-driven from this fork as a base.
+
 ![Architecture of the demo stack](docs/stack.svg)
 
 What's running, top to bottom:
@@ -632,19 +635,6 @@ a backstop against bugs or future raw-SQL tool surfaces.
 ├── NOTES.md                    # paste-ready upstream bug writeups
 └── README.md
 ```
-
-## A note on how this was built
-
-The DuckDB / Quack adapter in the sibling fork
-([`mitja/mcp-toolbox-duckdb`](https://github.com/mitja/mcp-toolbox-duckdb),
-branch `feat/duckdb-quack`) and this demo repository were developed
-with [Claude Code](https://claude.com/claude-code) (Anthropic's
-agentic CLI, Opus 4.7 at `xhigh` reasoning) doing the bulk of the
-iterative work — design discussions, the Go source/tool packages,
-integration tests, the Compose stack, the observability +
-load-test scaffolding, the docs, and this diagram — under human
-review and direction. The upstream contribution path
-(`googleapis/mcp-toolbox`) is human-driven from this fork as a base.
 
 ## License
 
