@@ -103,13 +103,18 @@ Smoke-test the metadata tools through the HTTP API:
 # List the toolset's contents
 curl -s http://localhost:5555/api/toolset/analytics_metadata | jq '{tools: (.tools | keys)}'
 
-# Discovery flow: catalogs -> schemas -> tables -> describe a table
-curl -s -X POST http://localhost:5555/api/tool/list_catalogs/invoke      -d '{}' | jq '.result | fromjson'
-curl -s -X POST http://localhost:5555/api/tool/list_remote_tables/invoke -d '{}' | jq '.result | fromjson'
-curl -s -X POST http://localhost:5555/api/tool/describe_sales/invoke     -d '{}' | jq '.result | fromjson'
+# Discovery flow: catalogs -> schemas -> tables -> describe a table.
+# Note: the `Content-Type: application/json` header is required — curl
+# defaults to `application/x-www-form-urlencoded` for -d, which Toolbox
+# accepts with HTTP 200 but an empty body (no JSON to parse, no tool
+# invocation actually runs).
+H='Content-Type: application/json'
+curl -s -X POST -H "$H" http://localhost:5555/api/tool/list_catalogs/invoke      -d '{}' | jq '.result | fromjson'
+curl -s -X POST -H "$H" http://localhost:5555/api/tool/list_remote_tables/invoke -d '{}' | jq '.result | fromjson'
+curl -s -X POST -H "$H" http://localhost:5555/api/tool/describe_sales/invoke     -d '{}' | jq '.result | fromjson'
 
 # Per-column statistics
-curl -s -X POST http://localhost:5555/api/tool/summarize_sales/invoke    -d '{}' | jq '.result | fromjson'
+curl -s -X POST -H "$H" http://localhost:5555/api/tool/summarize_sales/invoke    -d '{}' | jq '.result | fromjson'
 ```
 
 The metadata tools that target the remote DuckDB (everything except
