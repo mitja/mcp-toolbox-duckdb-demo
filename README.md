@@ -10,8 +10,9 @@ What's running, top to bottom:
 
 - **Host clients** — Claude Code via MCP at `localhost:5555/mcp`,
   `curl`/notebook against `/api/tool/<name>/invoke`, and your browser
-  for the **Jaeger** (`:16686`) and **MCP Inspector** (`:6274`)
-  web UIs.
+  for three web UIs: **MCP Inspector** (`:6274`), the built-in
+  **Toolbox UI** (`:5555/ui` — tool browser + invoker shipped with
+  Toolbox), and **Jaeger** (`:16686`).
 - **In-network clients (profile-gated)** — `trace-client`
   (`--profile trace`, single-call OTel demo), `trace-load`
   (`--profile load`, concurrent multi-source burst with PASS/FAIL
@@ -631,6 +632,19 @@ a backstop against bugs or future raw-SQL tool surfaces.
 ├── NOTES.md                    # paste-ready upstream bug writeups
 └── README.md
 ```
+
+## A note on how this was built
+
+The DuckDB / Quack adapter in the sibling fork
+([`mitja/mcp-toolbox-duckdb`](https://github.com/mitja/mcp-toolbox-duckdb),
+branch `feat/duckdb-quack`) and this demo repository were developed
+with [Claude Code](https://claude.com/claude-code) (Anthropic's
+agentic CLI, Opus 4.7 at `xhigh` reasoning) doing the bulk of the
+iterative work — design discussions, the Go source/tool packages,
+integration tests, the Compose stack, the observability +
+load-test scaffolding, the docs, and this diagram — under human
+review and direction. The upstream contribution path
+(`googleapis/mcp-toolbox`) is human-driven from this fork as a base.
 
 ## License
 

@@ -63,15 +63,18 @@
     <text x="410" y="178" text-anchor="middle" class="sublabel">→ http://localhost:5555/api/...</text>
     <text x="410" y="196" text-anchor="middle" class="sublabel">notebooks/walkthrough.ipynb</text>
 
-    <!-- Browser (Inspector UI on the left, Jaeger UI on the right — placement makes the arrows downstream cleaner). -->
-    <rect x="540" y="110" width="430" height="100" rx="6" class="box box-host"/>
-    <text x="755" y="140" text-anchor="middle" class="label">Browser (web UIs)</text>
-    <rect x="565" y="158" width="180" height="40" rx="4" fill="#f7fafc" stroke="#cbd5e0"/>
-    <text x="655" y="174" text-anchor="middle" class="sublabel">MCP Inspector UI</text>
-    <text x="655" y="190" text-anchor="middle" class="sublabel">http://localhost:6274</text>
-    <rect x="765" y="158" width="180" height="40" rx="4" fill="#f7fafc" stroke="#cbd5e0"/>
-    <text x="855" y="174" text-anchor="middle" class="sublabel">Jaeger UI</text>
-    <text x="855" y="190" text-anchor="middle" class="sublabel">http://localhost:16686</text>
+    <!-- Browser (three web UIs: Inspector left, Toolbox UI middle, Jaeger right). -->
+    <rect x="540" y="110" width="560" height="100" rx="6" class="box box-host"/>
+    <text x="820" y="140" text-anchor="middle" class="label">Browser (web UIs)</text>
+    <rect x="560" y="158" width="170" height="40" rx="4" fill="#f7fafc" stroke="#cbd5e0"/>
+    <text x="645" y="174" text-anchor="middle" class="sublabel">MCP Inspector UI</text>
+    <text x="645" y="190" text-anchor="middle" class="sublabel">http://localhost:6274</text>
+    <rect x="745" y="158" width="170" height="40" rx="4" fill="#f7fafc" stroke="#cbd5e0"/>
+    <text x="830" y="174" text-anchor="middle" class="sublabel">Toolbox UI</text>
+    <text x="830" y="190" text-anchor="middle" class="sublabel">http://localhost:5555/ui</text>
+    <rect x="930" y="158" width="170" height="40" rx="4" fill="#f7fafc" stroke="#cbd5e0"/>
+    <text x="1015" y="174" text-anchor="middle" class="sublabel">Jaeger UI</text>
+    <text x="1015" y="190" text-anchor="middle" class="sublabel">http://localhost:16686</text>
   </g>
 
   <!-- ====================== DOCKER PANEL ====================== -->
@@ -157,13 +160,22 @@
   <rect x="455" y="244" width="160" height="18" class="arrow-label-bg"/>
   <text x="535" y="258" text-anchor="middle" class="arrow-label" fill="#2c7a7b">:5555 → :5000 /api/...</text>
 
-  <!-- Host: Browser → Inspector UI (Inspector is on the LEFT of the browser, inspector container is also on the left side; short curve down). -->
-  <path d="M 655,210 C 655,250 660,275 660,312" class="arrow a-gray" marker-end="url(#arr-gray)"/>
-  <rect x="610" y="244" width="100" height="18" class="arrow-label-bg"/>
-  <text x="660" y="258" text-anchor="middle" class="arrow-label" fill="#4a5568">:6274 UI</text>
+  <!-- Host: Browser → Inspector UI (left pill → inspector container). -->
+  <path d="M 645,210 C 645,250 660,275 660,312" class="arrow a-gray" marker-end="url(#arr-gray)"/>
+  <rect x="600" y="244" width="100" height="18" class="arrow-label-bg"/>
+  <text x="650" y="258" text-anchor="middle" class="arrow-label" fill="#4a5568">:6274 UI</text>
 
-  <!-- Host: Browser → Jaeger UI. Route around the right edge: down then left into jaeger. Keeps the curve clear of the docker-panel title. -->
-  <path d="M 855,210 C 1080,250 1160,440 1140,580" class="arrow a-gray" marker-end="url(#arr-gray)"/>
+  <!-- Host: Browser → Toolbox UI (middle pill → Toolbox /ui). Same port
+       as the MCP/REST traffic, just a different path; render as a UI
+       arrow (dashed gray) to keep it visually distinct from the agent's
+       /mcp call. -->
+  <path d="M 830,210 C 830,300 800,400 760,450" class="arrow a-gray" marker-end="url(#arr-gray)"/>
+  <rect x="775" y="244" width="120" height="18" class="arrow-label-bg"/>
+  <text x="835" y="258" text-anchor="middle" class="arrow-label" fill="#4a5568">:5555/ui</text>
+
+  <!-- Host: Browser → Jaeger UI (right pill → jaeger). Curves out to the
+       right of the docker panel to clear the otel-collector box. -->
+  <path d="M 1015,210 C 1100,260 1160,440 1140,580" class="arrow a-gray" marker-end="url(#arr-gray)"/>
   <rect x="1085" y="244" width="80" height="18" class="arrow-label-bg"/>
   <text x="1125" y="258" text-anchor="middle" class="arrow-label" fill="#4a5568">:16686</text>
 
