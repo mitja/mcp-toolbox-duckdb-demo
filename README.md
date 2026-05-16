@@ -499,6 +499,89 @@ A few notes:
   entrypoint) but does its own concurrent fan-out — the script lives
   alongside the single-call demo for easy diffing.
 
+## Cross-catalog queries and pushdown
+
+The default tool surface (`revenue_by_customer`, `top_products`,
+`low_stock_items`, `inventory_summary`) wires each tool to **one**
+Quack source — DuckDB pushes filters and projections down to that
+remote, joins / aggregates / sorts happen in the in-process DuckDB
+after rows stream back. For a single-source `SELECT … GROUP BY …
+LIMIT` over a typical table that's small working memory regardless
+of how large the remote dataset is.
+
+When you actually need to combine data from two Quack servers in
+one query, the demo also ships a third source — `combined-analytics`
+— that ATTACHes both servers into the same in-process DuckDB via
+the adapter's `additional_attachments` config. The
+`product_orders_overview` tool joins `inventory_remote.products`
+with `sales_remote.orders` in a single SQL:
+
+```bash
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://localhost:5555/api/tool/product_orders_overview/invoke -d '{}' \
+  | jq '.result | fromjson | .rows[:3]'
+```
+
+```json
+[
+  {"category":"Hardware","name":"Sprocket","stock_qty":18,"reorder_at":30,"units_ordered":49,"distinct_customers":4},
+  {"category":"Hardware","name":"Widget",  "stock_qty":120,"reorder_at":25,"units_ordered":48,"distinct_customers":5},
+  {"category":"Hardware","name":"Gizmo",   "stock_qty":72, "reorder_at":20,"units_ordered":16,"distinct_customers":5}
+]
+```
+
+The join is executed **locally** by the in-process DuckDB after
+rows stream from each remote — that's the architectural cost of a
+cross-catalog query.
+
+### Tips for keeping work on the remote
+
+Most curated tools should look like the single-source ones — the
+remote is sized for the dataset, the Toolbox process isn't. Some
+heuristics that keep the local DuckDB instance lightweight:
+
+- **One source per tool when you can.** Each duckdb-quack source
+  pushes filters and projections through ATTACH; once you reference
+  two attached aliases in one query, DuckDB has to pull rows back
+  from each side to join them locally. Wire two single-source tools
+  and let the agent do the second hop, unless the query semantics
+  truly require a join in the database.
+- **Project narrowly.** `SELECT customer, SUM(amount)` is cheaper
+  than `SELECT *`; the Quack scanner pushes the column list, so
+  unselected columns never cross the wire. Avoid `SELECT *` in
+  tool config even when the table is small.
+- **Filter early.** A `WHERE` clause on the attached table
+  (`WHERE customer ILIKE ?` etc.) pushes down — the remote scans
+  fewer rows and ships less data. A `WHERE` on the *result* of a
+  local aggregate (`HAVING SUM(amount) > ?`) doesn't push and runs
+  locally.
+- **Aggregate where the data lives.** Single-source aggregates
+  (`GROUP BY customer FROM remote.sales`) typically stream — the
+  local hash table is sized by the number of distinct groups, not
+  by the source row count. Cross-source aggregates (group by a key
+  that joins both sides) materialize both inputs locally; prefer
+  doing the join inside one remote when you can.
+- **Always set a `LIMIT` for "top-N" tools.** With a `LIMIT N
+  ORDER BY x`, DuckDB streams + early-terminates. Without it, an
+  `ORDER BY` has to materialize the entire result set locally
+  before sorting.
+- **For metadata, prefer the dedicated tools.** `list_remote_tables`,
+  `describe_*`, and `summarize_*` go through Quack's `quack_query()`
+  table function — full SQL passthrough to the remote, no local
+  materialization. Pulling the same data via `SELECT * FROM
+  information_schema.tables` over an ATTACH would be slower and
+  fatter.
+- **`max_rows` is the local-memory safety net, not an architectural
+  decision.** Hitting it means a slow query has already pulled most
+  of its rows across the wire before being truncated. The real
+  guardrails are an explicit `LIMIT` in the tool's SQL and a tight
+  `WHERE` clause; `max_rows` just keeps a runaway query from
+  blowing up Toolbox's RAM.
+
+The single-source tools in this demo follow all of the above; the
+multi-source `product_orders_overview` is the deliberate exception
+so you can compare query plans side-by-side in the Jaeger UI.
+
 ## LangGraph agent demo
 
 ```bash

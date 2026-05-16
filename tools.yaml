@@ -35,6 +35,27 @@ sources:
       max_rows: 1000
       timeout: 30s
 
+  # Multi-attach source: one in-process DuckDB with BOTH Quack servers
+  # ATTACHed. Tools wired here can write a single SQL that references
+  # both remote catalogs in the same query — DuckDB pulls rows from
+  # each remote and executes the JOIN locally. This is the "expensive"
+  # path for the in-process DuckDB; the single-source tools above are
+  # the cheap path where work pushes down to one remote.
+  combined-analytics:
+    type: duckdb-quack
+    uri: quack:quack-server:9494
+    token: ${QUACK_TOKEN}
+    disable_ssl: true
+    attach_alias: sales_remote
+    additional_attachments:
+      - uri: quack:quack-server-2:9494
+        attach_alias: inventory_remote
+    policy:
+      read_only: true
+      reject_multiple_statements: true
+      max_rows: 1000
+      timeout: 30s
+
 tools:
   revenue_by_customer:
     type: duckdb-sql
@@ -115,6 +136,38 @@ tools:
       FROM inventory_remote.products
       GROUP BY category
       ORDER BY total_units DESC
+
+  # ---------------------------------------------------------------
+  # Cross-catalog tool wired to combined-analytics. The in-process
+  # DuckDB has BOTH Quack servers ATTACHed, so this JOIN combines
+  # rows from sales-quack.orders and inventory-quack.products in
+  # one query. The join is executed by the local DuckDB after rows
+  # stream back from each remote — the canonical example of the
+  # "data does cross the wire" path described in the README's
+  # pushdown tips.
+  # ---------------------------------------------------------------
+
+  product_orders_overview:
+    type: duckdb-sql
+    source: combined-analytics
+    description: >-
+      For each product in the inventory catalog, show its stock
+      situation plus the total quantity ordered across all sales.
+      Joins inventory_remote.products with sales_remote.orders on
+      product name. Read-only.
+    parameters: []
+    statement: |
+      SELECT
+        p.category,
+        p.name,
+        p.stock_qty,
+        p.reorder_at,
+        COALESCE(SUM(o.qty), 0) AS units_ordered,
+        COUNT(DISTINCT o.customer) AS distinct_customers
+      FROM inventory_remote.products p
+      LEFT JOIN sales_remote.orders o ON o.product = p.name
+      GROUP BY p.category, p.name, p.stock_qty, p.reorder_at
+      ORDER BY units_ordered DESC, p.name
 
   # ---------------------------------------------------------------
   # Metadata tools — let an agent discover the catalog before
@@ -221,3 +274,8 @@ toolsets:
   inventory_readonly:
     - low_stock_items
     - inventory_summary
+
+  # Cross-catalog tools: the in-process DuckDB ATTACHes both Quack
+  # servers and executes the JOIN locally after rows stream from each.
+  cross_catalog:
+    - product_orders_overview
