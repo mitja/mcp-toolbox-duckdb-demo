@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 880" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2c5282"/>
+    </marker>
+    <marker id="arr-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2c7a7b"/>
+    </marker>
+    <marker id="arr-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c05621"/>
+    </marker>
+    <marker id="arr-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#276749"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#718096"/>
+    </marker>
+    <style>
+      .panel       { fill:#fafbfc; stroke:#cbd5e0; stroke-width:1.5; }
+      .panel-title { font-size:13px; font-weight:600; fill:#4a5568; }
+      .box         { fill:#fff; stroke-width:1.5; }
+      .box-host    { stroke:#3182ce; }
+      .box-client  { stroke:#3182ce; }
+      .box-server  { stroke:#dd6b20; }
+      .box-data    { stroke:#805ad5; }
+      .box-obs     { stroke:#38a169; }
+      .box-inner   { fill:#f7fafc; stroke:#a0aec0; stroke-width:1; stroke-dasharray:3 2; }
+      .label       { font-size:13px; fill:#1a202c; font-weight:600; }
+      .sublabel    { font-size:11px; fill:#4a5568; }
+      .badge       { font-size:10px; fill:#718096; font-style:italic; }
+      .arrow       { fill:none; stroke-width:1.6; }
+      .a-blue      { stroke:#2c5282; }
+      .a-teal      { stroke:#2c7a7b; }
+      .a-orange    { stroke:#c05621; }
+      .a-green     { stroke:#276749; stroke-dasharray:5 3; }
+      .a-gray      { stroke:#718096; stroke-dasharray:3 2; }
+      .arrow-label { font-size:11px; fill:#2d3748; }
+      .arrow-label-bg { fill:#fafbfc; }
+    </style>
+  </defs>
+
+  <!-- Title -->
+  <text x="600" y="28" text-anchor="middle" font-size="18" font-weight="700" fill="#1a202c">MCP Toolbox DuckDB + Quack — demo stack</text>
+  <text x="600" y="48" text-anchor="middle" font-size="12" fill="#718096">Always-on services have solid borders. Profile-gated services show their compose profile.</text>
+
+  <!-- ====================== HOST PANEL ====================== -->
+  <g>
+    <rect x="40" y="68" width="1120" height="170" rx="8" class="panel"/>
+    <text x="60" y="92" class="panel-title">Host (your laptop · localhost)</text>
+
+    <!-- Claude Code -->
+    <rect x="80" y="110" width="200" height="100" rx="6" class="box box-host"/>
+    <text x="180" y="140" text-anchor="middle" class="label">Claude Code</text>
+    <text x="180" y="160" text-anchor="middle" class="sublabel">MCP client</text>
+    <text x="180" y="178" text-anchor="middle" class="sublabel">claude-code/claude_config.example.json</text>
+    <text x="180" y="196" text-anchor="middle" class="sublabel">→ http://localhost:5555/mcp</text>
+
+    <!-- curl / notebook -->
+    <rect x="310" y="110" width="200" height="100" rx="6" class="box box-host"/>
+    <text x="410" y="140" text-anchor="middle" class="label">curl · notebook</text>
+    <text x="410" y="160" text-anchor="middle" class="sublabel">REST smoke tests, walkthrough</text>
+    <text x="410" y="178" text-anchor="middle" class="sublabel">→ http://localhost:5555/api/...</text>
+    <text x="410" y="196" text-anchor="middle" class="sublabel">notebooks/walkthrough.ipynb</text>
+
+    <!-- Browser (Inspector UI on the left, Jaeger UI on the right — placement makes the arrows downstream cleaner). -->
+    <rect x="540" y="110" width="430" height="100" rx="6" class="box box-host"/>
+    <text x="755" y="140" text-anchor="middle" class="label">Browser (web UIs)</text>
+    <rect x="565" y="158" width="180" height="40" rx="4" fill="#f7fafc" stroke="#cbd5e0"/>
+    <text x="655" y="174" text-anchor="middle" class="sublabel">MCP Inspector UI</text>
+    <text x="655" y="190" text-anchor="middle" class="sublabel">http://localhost:6274</text>
+    <rect x="765" y="158" width="180" height="40" rx="4" fill="#f7fafc" stroke="#cbd5e0"/>
+    <text x="855" y="174" text-anchor="middle" class="sublabel">Jaeger UI</text>
+    <text x="855" y="190" text-anchor="middle" class="sublabel">http://localhost:16686</text>
+  </g>
+
+  <!-- ====================== DOCKER PANEL ====================== -->
+  <g>
+    <rect x="40" y="262" width="1120" height="558" rx="8" class="panel"/>
+    <text x="60" y="286" class="panel-title">Docker Compose network — in-network DNS uses service name</text>
+
+    <!-- ==== Profile-gated clients (top row inside docker) ==== -->
+    <rect x="80" y="312" width="200" height="92" rx="6" class="box box-client"/>
+    <text x="180" y="340" text-anchor="middle" class="label">trace-client</text>
+    <text x="180" y="358" text-anchor="middle" class="sublabel">OTel demo, no LLM</text>
+    <text x="180" y="375" text-anchor="middle" class="sublabel">injects _meta.traceparent</text>
+    <text x="180" y="395" text-anchor="middle" class="badge">profile: trace</text>
+
+    <rect x="310" y="312" width="200" height="92" rx="6" class="box box-client"/>
+    <text x="410" y="340" text-anchor="middle" class="label">langgraph</text>
+    <text x="410" y="358" text-anchor="middle" class="sublabel">ReAct agent (Anthropic)</text>
+    <text x="410" y="375" text-anchor="middle" class="sublabel">analytics_readonly toolset</text>
+    <text x="410" y="395" text-anchor="middle" class="badge">profile: agent · needs ANTHROPIC_API_KEY</text>
+
+    <rect x="540" y="312" width="240" height="92" rx="6" class="box box-client"/>
+    <text x="660" y="340" text-anchor="middle" class="label">inspector</text>
+    <text x="660" y="358" text-anchor="middle" class="sublabel">MCP Inspector — UI + proxy</text>
+    <text x="660" y="375" text-anchor="middle" class="sublabel">UI :6274 · proxy :6277</text>
+    <text x="660" y="395" text-anchor="middle" class="badge">profile: inspect</text>
+
+    <!-- ==== Toolbox (center, always-on) ==== -->
+    <rect x="80" y="450" width="700" height="170" rx="6" class="box box-server"/>
+    <text x="430" y="478" text-anchor="middle" class="label">Toolbox :5000  (mcp-toolbox-duckdb fork, feat/duckdb-quack)</text>
+    <text x="430" y="498" text-anchor="middle" class="sublabel">endpoints: /mcp (JSON-RPC streamable HTTP) · /api/tool/&lt;name&gt;/invoke · /api/toolset</text>
+
+    <rect x="120" y="514" width="620" height="92" rx="5" class="box-inner"/>
+    <text x="430" y="540" text-anchor="middle" class="label">in-process DuckDB (duckdb-go CGO)</text>
+    <text x="430" y="560" text-anchor="middle" class="sublabel">LOAD quack · CREATE OR REPLACE SECRET (TYPE quack, TOKEN '...') · ATTACH 'quack:quack-server:9494'</text>
+    <text x="430" y="580" text-anchor="middle" class="sublabel">policy: max_rows, timeout, statement validator, forbidden patterns</text>
+    <text x="430" y="597" text-anchor="middle" class="sublabel">reconnect-on-quack-restart, OTel span (duckdb.query) + 5 metrics</text>
+
+    <!-- ==== quack-server (always-on) ==== -->
+    <rect x="240" y="675" width="380" height="100" rx="6" class="box box-data"/>
+    <text x="430" y="704" text-anchor="middle" class="label">quack-server :9494</text>
+    <text x="430" y="724" text-anchor="middle" class="sublabel">Debian + DuckDB CLI + Quack extension</text>
+    <text x="430" y="742" text-anchor="middle" class="sublabel">TOKEN auth · read_only authorization callback</text>
+    <text x="430" y="760" text-anchor="middle" class="sublabel">init.sql.tmpl + seed.sql (~30 rows in sales/orders)</text>
+
+    <!-- ==== observability column (always-on) ==== -->
+    <rect x="820" y="450" width="320" height="92" rx="6" class="box box-obs"/>
+    <text x="980" y="479" text-anchor="middle" class="label">otel-collector :4317 / :4318</text>
+    <text x="980" y="497" text-anchor="middle" class="sublabel">OTLP gRPC + HTTP receivers</text>
+    <text x="980" y="514" text-anchor="middle" class="sublabel">debug exporter + forward to jaeger</text>
+    <text x="980" y="532" text-anchor="middle" class="badge">receives spans from toolbox, langgraph, trace-client</text>
+
+    <rect x="820" y="580" width="320" height="92" rx="6" class="box box-obs"/>
+    <text x="980" y="609" text-anchor="middle" class="label">jaeger :16686</text>
+    <text x="980" y="627" text-anchor="middle" class="sublabel">all-in-one (OTLP-native receiver)</text>
+    <text x="980" y="645" text-anchor="middle" class="sublabel">trace search + flame graph UI</text>
+  </g>
+
+  <!-- ====================== ARROWS ====================== -->
+
+  <!-- Host → Docker arrows: long curves that bypass the profile-client row
+       (they enter Toolbox / jaeger / inspector directly). Labels sit in the
+       narrow band between the host panel (ends at y=238) and the docker
+       panel title (starts at y=286). -->
+
+  <!-- Host: Claude Code → Toolbox /mcp. Route through the gap between
+       trace-client (ends x=280) and langgraph (starts x=310). -->
+  <path d="M 180,210 C 295,260 295,420 295,450" class="arrow a-blue" marker-end="url(#arr-blue)"/>
+  <rect x="160" y="244" width="160" height="18" class="arrow-label-bg"/>
+  <text x="240" y="258" text-anchor="middle" class="arrow-label" fill="#2c5282">:5555 → :5000 /mcp</text>
+
+  <!-- Host: curl/notebook → Toolbox /api. Route through the gap between
+       langgraph (ends x=510) and inspector (starts x=540). -->
+  <path d="M 410,210 C 525,260 525,420 525,450" class="arrow a-teal" marker-end="url(#arr-teal)"/>
+  <rect x="455" y="244" width="160" height="18" class="arrow-label-bg"/>
+  <text x="535" y="258" text-anchor="middle" class="arrow-label" fill="#2c7a7b">:5555 → :5000 /api/...</text>
+
+  <!-- Host: Browser → Inspector UI (Inspector is on the LEFT of the browser, inspector container is also on the left side; short curve down). -->
+  <path d="M 655,210 C 655,250 660,275 660,312" class="arrow a-gray" marker-end="url(#arr-gray)"/>
+  <rect x="610" y="244" width="100" height="18" class="arrow-label-bg"/>
+  <text x="660" y="258" text-anchor="middle" class="arrow-label" fill="#4a5568">:6274 UI</text>
+
+  <!-- Host: Browser → Jaeger UI. Route around the right edge: down then left into jaeger. Keeps the curve clear of the docker-panel title. -->
+  <path d="M 855,210 C 1080,250 1160,440 1140,580" class="arrow a-gray" marker-end="url(#arr-gray)"/>
+  <rect x="1085" y="244" width="80" height="18" class="arrow-label-bg"/>
+  <text x="1125" y="258" text-anchor="middle" class="arrow-label" fill="#4a5568">:16686</text>
+
+  <!-- In-network: clients → Toolbox /mcp -->
+  <path d="M 180,404 L 220,450" class="arrow a-blue" marker-end="url(#arr-blue)"/>
+  <path d="M 410,404 L 410,450" class="arrow a-blue" marker-end="url(#arr-blue)"/>
+  <path d="M 660,404 L 620,450" class="arrow a-blue" marker-end="url(#arr-blue)"/>
+  <rect x="350" y="416" width="120" height="18" class="arrow-label-bg"/>
+  <text x="410" y="430" text-anchor="middle" class="arrow-label" fill="#2c5282">toolbox:5000/mcp</text>
+
+  <!-- Toolbox (in-process DuckDB) → quack-server (Quack remote protocol) -->
+  <path d="M 430,620 L 430,675" class="arrow a-orange" marker-end="url(#arr-orange)"/>
+  <rect x="345" y="635" width="170" height="18" class="arrow-label-bg"/>
+  <text x="430" y="649" text-anchor="middle" class="arrow-label" fill="#c05621">quack-server:9494 (TCP)</text>
+
+  <!-- Toolbox → otel-collector (OTLP) -->
+  <path d="M 780,496 L 820,496" class="arrow a-green" marker-end="url(#arr-green)"/>
+  <rect x="780" y="478" width="42" height="16" class="arrow-label-bg"/>
+  <text x="801" y="490" text-anchor="middle" class="arrow-label" fill="#276749">OTLP</text>
+
+  <!-- otel-collector → jaeger (OTLP forward) -->
+  <path d="M 980,542 L 980,580" class="arrow a-green" marker-end="url(#arr-green)"/>
+  <rect x="950" y="552" width="62" height="16" class="arrow-label-bg"/>
+  <text x="981" y="564" text-anchor="middle" class="arrow-label" fill="#276749">OTLP fwd</text>
+
+  <!-- ====================== LEGEND ====================== -->
+  <g transform="translate(40, 845)">
+    <text x="0" y="0" font-size="11" font-weight="600" fill="#4a5568">Legend:</text>
+
+    <line x1="60"  y1="-4" x2="100" y2="-4" stroke="#2c5282" stroke-width="1.6"/>
+    <text x="106" y="0" font-size="11" fill="#4a5568">MCP JSON-RPC</text>
+
+    <line x1="208" y1="-4" x2="248" y2="-4" stroke="#2c7a7b" stroke-width="1.6"/>
+    <text x="254" y="0" font-size="11" fill="#4a5568">HTTP /api</text>
+
+    <line x1="328" y1="-4" x2="368" y2="-4" stroke="#c05621" stroke-width="1.6"/>
+    <text x="374" y="0" font-size="11" fill="#4a5568">Quack remote (ATTACH)</text>
+
+    <line x1="528" y1="-4" x2="568" y2="-4" stroke="#276749" stroke-width="1.6" stroke-dasharray="5 3"/>
+    <text x="574" y="0" font-size="11" fill="#4a5568">OTLP spans + metrics</text>
+
+    <line x1="724" y1="-4" x2="764" y2="-4" stroke="#718096" stroke-width="1.6" stroke-dasharray="3 2"/>
+    <text x="770" y="0" font-size="11" fill="#4a5568">Browser → web UI (host)</text>
+  </g>
+</svg>

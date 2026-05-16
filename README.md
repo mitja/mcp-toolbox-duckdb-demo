@@ -2,21 +2,30 @@
 
 End-to-end demo stack for the **MCP Toolbox DuckDB / Quack adapter** that
 lives in the sibling fork [`mitja/mcp-toolbox-duckdb`](https://github.com/mitja/mcp-toolbox-duckdb)
-(branch `feat/duckdb-quack`). The stack:
+(branch `feat/duckdb-quack`).
 
-```
-Claude Code / LangGraph
-        │
-        ▼
-   MCP Toolbox  ──── duckdb-sql tool ────▶ DuckDB (in-process client)
-   (port 5000)                                       │
-        │                                            │ ATTACH 'quack:...'
-        ▼                                            ▼
-       /mcp                                  Quack remote (port 9494)
-                                                   ▲
-                                                   │ token + read-only authz
-                                              docker container
-```
+![Architecture of the demo stack](docs/stack.svg)
+
+What's running, top to bottom:
+
+- **Host clients** — Claude Code via MCP at `localhost:5555/mcp`,
+  `curl`/notebook against `/api/tool/<name>/invoke`, and your browser
+  for the **Jaeger** (`:16686`) and **MCP Inspector** (`:6274`)
+  web UIs.
+- **In-network clients (profile-gated)** — `trace-client` (`--profile
+  trace`, no LLM), `langgraph` (`--profile agent`, needs Anthropic API
+  key), `inspector` (`--profile inspect`, MCP Inspector UI + proxy).
+- **Toolbox** (`toolbox:5000`) — the MCP Toolbox server from the
+  fork, with an **in-process DuckDB** (CGO `duckdb-go`) that holds
+  the Quack `ATTACH`. The same statement validator runs at config-load
+  and per-invocation; OTel span `duckdb.query` plus 5 metrics emit on
+  every call.
+- **`quack-server` (`:9494`)** — Debian + DuckDB CLI + the Quack
+  extension, with the `read_only` authorization callback. The real
+  security boundary; any destructive statement that somehow gets past
+  Toolbox is refused here.
+- **`otel-collector` + `jaeger`** — always-on, receive spans/metrics
+  from anything OTel-instrumented (Toolbox plus any active client).
 
 ## Prerequisites
 
@@ -532,20 +541,32 @@ a backstop against bugs or future raw-SQL tool surfaces.
 
 ```
 .
-├── docker-compose.yaml         # 3-service stack
-├── tools.yaml                  # MCP Toolbox source + tool config
+├── docker-compose.yaml         # always-on: quack-server, toolbox, otel-collector, jaeger
+│                               # profile-gated: trace-client, langgraph, inspector
+├── tools.yaml                  # MCP Toolbox source + tool config (3 toolsets)
 ├── quack-server/
 │   ├── Dockerfile              # Debian + DuckDB CLI + Quack
 │   ├── entrypoint.sh           # envsubst init.sql.tmpl, then duckdb
 │   ├── init.sql.tmpl           # INSTALL/LOAD quack, seed, authz, serve
 │   └── seed.sql                # ~30 rows across sales + orders
-├── langgraph/
+├── otel-collector/
+│   └── config.yaml             # OTLP receivers + jaeger forwarder + debug exporter
+├── trace-client/               # profile: trace  (Python, no LLM)
+│   ├── Dockerfile
+│   ├── pyproject.toml
+│   └── app.py                  # Manual _meta.traceparent injection demo
+├── langgraph/                  # profile: agent  (Anthropic ReAct agent)
 │   ├── Dockerfile              # python:3.12-slim
-│   ├── pyproject.toml          # toolbox-langchain + langgraph + langchain-anthropic
-│   └── app.py                  # ReAct agent that loads analytics_readonly
+│   ├── pyproject.toml          # toolbox-langchain + langgraph + langchain
+│   └── app.py                  # ReAct agent with telemetry_enabled=True
+├── notebooks/
+│   └── walkthrough.ipynb       # 40-cell interactive tour of the whole demo
 ├── claude-code/
 │   └── claude_config.example.json
+├── docs/
+│   └── stack.svg               # architecture diagram (rendered at the top of this README)
 ├── .env.example
+├── NOTES.md                    # paste-ready upstream bug writeups
 └── README.md
 ```
 
