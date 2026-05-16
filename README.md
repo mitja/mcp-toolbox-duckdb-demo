@@ -158,13 +158,13 @@ callback.
 
 ```bash
 # Happy path
-curl -s -X -H 'Content-Type: application/json' POST http://localhost:5555/api/tool/dev_duckdb_execute_sql/invoke \
+curl -s -X POST -H 'Content-Type: application/json' http://localhost:5555/api/tool/dev_duckdb_execute_sql/invoke \
     -d '{"sql": "SELECT count(*) AS n FROM remote.sales"}' \
     | jq '.result | fromjson'
 
 # Destructive verbs come back as an AgentError envelope:
 #   {"result": "{\"error\":\"statement rejected by policy: ...\"}"}
-curl -s -X -H 'Content-Type: application/json' POST http://localhost:5555/api/tool/dev_duckdb_execute_sql/invoke \
+curl -s -X POST -H 'Content-Type: application/json' http://localhost:5555/api/tool/dev_duckdb_execute_sql/invoke \
     -d '{"sql": "DROP TABLE remote.sales"}' \
     | jq '.result | fromjson'
 ```
@@ -173,6 +173,88 @@ For production deployments, remove the `dev_duckdb_execute_sql` entry
 from `tools.yaml` entirely (or flip `enabled: true` to anything else;
 the server will refuse to start). The other toolsets
 (`analytics_readonly`, `analytics_metadata`) are unaffected.
+
+## Rendering JSON output as tables
+
+The spec §7 envelope is great for programs and a bit dense to
+eyeball — especially `summarize_sales` with its 12 output columns.
+A few CLI tools turn the `.rows` array into something pasteable.
+
+### Miller (`mlr`) — most flexible
+
+`brew install miller`. Reads JSON, writes to terminal / markdown /
+CSV / TSV / much more, all switched by a single flag.
+
+```bash
+H='Content-Type: application/json'
+
+# 1. Pretty terminal table
+curl -sS -X POST -H "$H" http://localhost:5555/api/tool/describe_sales/invoke -d '{}' \
+  | jq '.result | fromjson | .rows' \
+  | mlr --ijson --opprint cat
+# column_name data_type     is_nullable
+# id          INTEGER       NO
+# customer    VARCHAR       NO
+# amount      DECIMAL(18,2) NO
+# order_date  DATE          NO
+
+# 2. Markdown (paste into a PR description or notebook)
+curl -sS -X POST -H "$H" http://localhost:5555/api/tool/describe_sales/invoke -d '{}' \
+  | jq '.result | fromjson | .rows' \
+  | mlr --ijson --omd cat
+# | column_name | data_type | is_nullable |
+# | --- | --- | --- |
+# | id | INTEGER | NO |
+# | customer | VARCHAR | NO |
+# | amount | DECIMAL(18,2) | NO |
+# | order_date | DATE | NO |
+
+# 3. CSV (pipe to a spreadsheet, or share as a file)
+curl -sS -X POST -H "$H" http://localhost:5555/api/tool/describe_sales/invoke -d '{}' \
+  | jq '.result | fromjson | .rows' \
+  | mlr --ijson --ocsv cat
+```
+
+For `summarize_sales` (12 columns), `--opprint --barred` keeps the
+columns aligned and visually grouped.
+
+### `jq` + `column -t` — zero install
+
+Lives on every dev box. Slightly more verbose because you list the
+columns yourself, but works without installing anything.
+
+```bash
+curl -sS -X POST -H 'Content-Type: application/json' \
+    http://localhost:5555/api/tool/describe_sales/invoke -d '{}' \
+  | jq -r '.result | fromjson |
+      (["column_name","data_type","is_nullable"] | @tsv),
+      (.rows[] | [.column_name, .data_type, .is_nullable] | @tsv)' \
+  | column -t -s$'\t'
+# column_name  data_type      is_nullable
+# id           INTEGER        NO
+# customer     VARCHAR        NO
+# amount       DECIMAL(18,2)  NO
+# order_date   DATE           NO
+```
+
+### Honorable mentions
+
+- **`jtbl`** (`pip install jtbl`) — one-line `... | jtbl` for an
+  ASCII terminal table. Less flexible than Miller (no markdown / CSV
+  output), but very low ceremony.
+- **VisiData** (`vd`) — interactive TUI spreadsheet, reads JSON
+  natively (`vd path/to.json`, or `... | vd -f json`). Overkill for
+  small results; unbeatable for browsing a 5000-row truncated SELECT.
+
+### Which to pick
+
+| Goal | Pick |
+|------|------|
+| Quick eyeball in a terminal | `mlr --opprint` (or `jtbl` if you have it) |
+| Paste into a PR / notebook | `mlr --omd` |
+| Share as a file or pipe to a sheet | `mlr --ocsv` |
+| No installs allowed | `jq -r '... \| @tsv' \| column -t -s$'\t'` |
+| Browse a big result interactively | VisiData |
 
 ## Observability (OpenTelemetry)
 
