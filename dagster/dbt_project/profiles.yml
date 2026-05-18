@@ -1,0 +1,21 @@
+# dbt connection profile for the demo.
+#
+# DB path is :memory: so a model run is a one-shot DuckDB instance
+# that reads Parquet sources, transforms in-memory, and writes
+# Parquet outputs. No persistent DuckDB file = no file-lock conflict
+# with quack-server-3 (which keeps its own DuckDB open continuously
+# to serve queries over Quack).
+#
+# external_root is where dbt-duckdb's `external` materialization
+# writes model outputs. quack-server-3's init.sql creates a VIEW over
+# read_parquet for each file under this directory.
+
+web_events:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ":memory:"
+      threads: 2
+      schema: analytics
+      external_root: /data/marts

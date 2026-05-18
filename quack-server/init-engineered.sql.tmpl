@@ -1,0 +1,37 @@
+-- Quack server init for the engineered warehouse (quack-server-3).
+--
+-- The DuckDB file this script runs against is a fresh, empty
+-- DuckDB. We never write data into it — quack-server-3's only job
+-- is to expose the dbt-produced Parquet files (in /data/marts/) as
+-- views over the Quack protocol. The actual reads happen on each
+-- query via read_parquet, so re-running dbt to refresh a Parquet
+-- is picked up on the next agent / BI client call without
+-- restarting this container. Same pattern the inventory server
+-- uses for the price_history.parquet view; see NOTES.md
+-- "Pattern: federate non-DuckDB backends *inside* the remote
+-- Quack server".
+
+INSTALL quack FROM core_nightly;
+LOAD quack;
+
+-- Views over the Parquet outputs dbt-duckdb writes. The filenames
+-- match the dbt model names — see dagster/dbt_project/models/.
+CREATE OR REPLACE VIEW main.daily_traffic AS
+    SELECT * FROM read_parquet('/data/marts/daily_traffic.parquet');
+
+CREATE OR REPLACE VIEW main.top_pages_30d AS
+    SELECT * FROM read_parquet('/data/marts/top_pages_30d.parquet');
+
+-- Read-only authorization macro — same defense-in-depth pattern
+-- as the other two Quack servers; install after clients ATTACH
+-- (see init.sql.tmpl note).
+CREATE OR REPLACE MACRO read_only(sid, query) AS (
+    regexp_matches(upper(trim(query)), '^(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW)\b')
+);
+
+CALL quack_serve(
+    'quack:0.0.0.0:${QUACK_PORT}',
+    token := '${QUACK_TOKEN}',
+    allow_other_hostname := true,
+    disable_ssl := true
+);

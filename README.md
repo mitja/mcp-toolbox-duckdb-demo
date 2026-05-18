@@ -13,12 +13,13 @@ What's running, top to bottom:
 
 - **Host clients** — Claude Code via MCP at `localhost:5555/mcp`,
   `curl`/notebook against `/api/tool/<name>/invoke`, and your browser
-  for five web UIs: **MCP Inspector** (`:6274`), the built-in
+  for six web UIs: **MCP Inspector** (`:6274`), the built-in
   **Toolbox UI** (`:5555/ui` — tool browser + invoker shipped with
   Toolbox), **Cube Playground** (`:4000` — the semantic-layer
   authoring + query UI), **Apache Superset** (`:8088` — the BI
-  surface, with a pre-built dashboard over Cube), and **Jaeger**
-  (`:16686`).
+  surface, with a pre-built dashboard over Cube), **Dagster**
+  (`:3000` — orchestration UI for the dlt + dbt-duckdb pipeline),
+  and **Jaeger** (`:16686`).
 - **In-network clients (profile-gated)** — `trace-client`
   (`--profile trace`, single-call OTel demo), `trace-load`
   (`--profile load`, concurrent multi-source burst with PASS/FAIL
@@ -60,6 +61,13 @@ What's running, top to bottom:
   one chart + one dashboard against the `sales` cube. The dashboard
   is the visual proof that the semantic model serves a real BI
   client. See "BI dashboard with Apache Superset" below.
+- **`dagster` + `quack-server-3`** — the data-engineering track.
+  Dagster orchestrates a dlt ingest (synthetic web-events Parquet)
+  followed by dbt-duckdb transforms (`stg_events` →
+  `daily_traffic`, `top_pages_30d`). The dbt outputs land as
+  Parquet under `/data/marts/`; `quack-server-3` exposes them via
+  Quack as the `analytics-engineered` Toolbox source. See "Data
+  engineering pipeline (dlt + dbt-duckdb + Dagster)" below.
 
 ## Prerequisites
 
@@ -930,6 +938,105 @@ yourself in the UI also persist.
   not deploy this layout to anything reachable beyond loopback
   without rotating `SUPERSET_SECRET_KEY` and the admin password.
 
+## Data engineering pipeline (dlt + dbt-duckdb + Dagster)
+
+The rest of the demo gives you analytics over a **seeded** warehouse —
+fine for showing how the agent / BI / observability stack hangs
+together, but the data magically appears out of `seed.sql`. The
+data-engineering track closes that gap with the standard
+DuckDB-shaped lean stack: **dlt** ingests, **dbt-duckdb** transforms,
+**Dagster** orchestrates and exposes a UI.
+
+The new dataset is web-events shaped (page views, clicks, sessions
+across countries) so it sits next to — not on top of — the existing
+sales/orders/inventory data. A new Quack server
+(`quack-server-3`) serves the dbt outputs; a new
+`analytics-engineered` Toolbox source maps to it; two new tools land
+in a new `analytics_engineered` toolset.
+
+```bash
+docker compose up -d dagster quack-server-3
+# Dagster UI:   http://localhost:3000   (job graph, schedule, logs)
+# Tools:        analytics_engineered toolset (2 tools, see below)
+```
+
+The asset graph in Dagster:
+
+```
+   web_events_source.events      ← dlt
+            │  (Parquet, /data/raw/web_events/events/)
+            ▼
+        stg_events                ← dbt VIEW (in-memory)
+            │
+   ┌────────┴────────┐
+   ▼                 ▼
+daily_traffic     top_pages_30d   ← dbt external Parquet (/data/marts/)
+            │
+            ▼
+       quack-server-3              ← CREATE VIEW over read_parquet
+            │  (Quack remote)
+            ▼
+       Toolbox tools                ← duckdb-quack ATTACH
+```
+
+dlt's `web_events` pipeline (in
+[`dagster/dlt_pipeline.py`](dagster/dlt_pipeline.py)) yields 500
+deterministic synthetic events to dlt's **filesystem** destination
+(pinned to Parquet). The dbt project
+([`dagster/dbt_project/`](dagster/dbt_project/)) reads the dlt
+output as a dbt source (`external_location: read_parquet(...)`),
+projects + aggregates through `stg_events`, `daily_traffic`, and
+`top_pages_30d`, and **materializes the marts as Parquet** under
+`/data/marts/`. quack-server-3's init.sql creates a `VIEW` over each
+mart Parquet so the Toolbox-side ATTACH sees them as ordinary tables.
+
+### Why Parquet on disk between every hop?
+
+The lock-free path. DuckDB takes an exclusive file lock when it
+opens a database, so a shared DuckDB file between Dagster (writing
+on every schedule) and quack-server-3 (holding the connection open
+to serve queries) would conflict. Going through Parquet files
+sidesteps the lock entirely: dbt's `external` materialization writes
+to a temp file and atomically renames into place; quack-server-3
+re-reads via `read_parquet` on every query, so a freshly-replaced
+file is picked up immediately without a restart.
+
+### The agent surface
+
+Two tools land in the `analytics_engineered` toolset:
+
+```bash
+# Top pages across the trailing 30 days
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://localhost:5555/api/tool/top_pages_30d/invoke -d '{}' \
+  | jq '.result | fromjson | .rows[:3]'
+
+# Daily traffic for one country
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://localhost:5555/api/tool/daily_traffic_for_country/invoke \
+  -d '{"country":"DE"}' \
+  | jq '.result | fromjson | .rows[:3]'
+```
+
+The agent doesn't need to know the rows came from a pipeline. As far
+as the MCP surface is concerned, these are ordinary curated tools
+backed by an ordinary Quack source — the difference is just that
+the data behind them refreshes on a Dagster schedule.
+
+### What's *not* in scope here
+
+- **No Cube integration of the engineered data.** dbt has an
+  official Cube integration that exports the dbt manifest as cubes;
+  hooking it up is a one-script addition we haven't done. Left as
+  a natural follow-on.
+- **No alerting / scheduled-report generation.** Dagster supports
+  both (sensors + email/slack) but the demo only wires the schedule
+  to materialize the pipeline. A `notify` step that posts to Slack
+  is a small addition.
+- **No data tests.** dbt's `tests:` block in sources.yml /
+  schema.yml would catch null-revenue / out-of-range dates / etc.
+  Easy to extend.
+
 ## LangGraph agent demo
 
 ```bash
@@ -1083,7 +1190,7 @@ a backstop against bugs or future raw-SQL tool surfaces.
 
 ```
 .
-├── docker-compose.yaml         # always-on: quack-server, quack-server-2, toolbox, otel-collector, jaeger, cube, cube-seed, superset
+├── docker-compose.yaml         # always-on: quack-server{,-2,-3}, toolbox, otel-collector, jaeger, cube, cube-seed, superset, dagster
 │                               # profile-gated: trace-client, trace-load, langgraph, inspector
 ├── tools.yaml                  # MCP Toolbox source + tool config (6 toolsets, 3 sources)
 ├── quack-server/
@@ -1120,6 +1227,12 @@ a backstop against bugs or future raw-SQL tool surfaces.
 │   ├── bootstrap.sh                  # idempotent: db upgrade + create-admin + init + gunicorn
 │   ├── bootstrap.py                  # REST-API bootstrap: database + dataset + chart + dashboard
 │   └── screenshot.py                 # Playwright capture → docs/superset_dashboard.png
+├── dagster/                           # Data-engineering track (dlt + dbt-duckdb + Dagster)
+│   ├── Dockerfile                    # python:3.12 + dagster + dagster-{dlt,dbt} + dlt + dbt-duckdb
+│   ├── entrypoint.sh                 # dbt parse + initial materialize + dagster dev
+│   ├── definitions.py                # Definitions: dlt_assets + dbt_assets + 15-min schedule
+│   ├── dlt_pipeline.py               # Synthetic web-events source → Parquet
+│   └── dbt_project/                  # dbt-duckdb: stg_events → daily_traffic + top_pages_30d
 ├── docs/
 │   └── stack.svg               # architecture diagram (rendered at the top of this README)
 ├── .env.example

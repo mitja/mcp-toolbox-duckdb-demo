@@ -403,6 +403,77 @@ services:
       retries: 60
       start_period: 60s
 
+  # ---------------------------------------------------------------
+  # Data-engineering track: dlt + dbt-duckdb + Dagster.
+  #
+  # Demonstrates the full EL → T → semantic → consumption loop on a
+  # synthetic web-events dataset (separate from the seed.sql data
+  # that backs the rest of the demo). Dagster orchestrates dlt
+  # ingest + dbt transform as one asset graph and exposes a UI on
+  # :3000.
+  #
+  # The pipeline writes to /data/engineered.duckdb in a shared
+  # volume; quack-server-3 mounts the same volume read-only and
+  # serves the dbt-produced tables over Quack so the existing
+  # MCP Toolbox source plumbing reaches them.
+  # ---------------------------------------------------------------
+  dagster:
+    build: ./dagster
+    container_name: dagster
+    environment:
+      DAGSTER_HOME: /dagster_home
+      # dlt's filesystem destination defaults to gzip'd JSONL named
+      # *.jsonl — confusing to debug. Pin to plain Parquet so dbt's
+      # read_parquet picks it up natively.
+      DESTINATION__FILESYSTEM__LOADER_FILE_FORMAT: parquet
+    volumes:
+      - analytics-engineered-data:/data
+      - dagster-home:/dagster_home
+    ports:
+      - "3000:3000"
+    healthcheck:
+      # /server_info returns JSON once gunicorn + the daemon are up.
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:3000/server_info', timeout=3).read(); sys.exit(0)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 90s
+
+  # Third Quack server (engineered warehouse). Same image as the
+  # other two; mounts the analytics-engineered-data volume read-only
+  # and serves /data/engineered.duckdb instead of the per-image
+  # /quack/seed.sql baked into the first two servers. quack-server-3
+  # only starts after Dagster has materialized at least once
+  # (entrypoint.sh in the dagster service runs `dagster asset
+  # materialize --select '*'` before starting the UI).
+  quack-server-3:
+    build: ./quack-server
+    container_name: duckdb-quack-3
+    environment:
+      QUACK_TOKEN: ${QUACK_TOKEN:?set QUACK_TOKEN in .env}
+      QUACK_PORT: "9494"
+    volumes:
+      # Same volume Dagster writes to. quack-server-3 needs write
+      # access for its own /data/analytics.duckdb (a tiny file that
+      # holds only the view definitions over the dbt-produced
+      # Parquets); dbt and dlt write into subdirs (/data/raw,
+      # /data/marts) that this container only reads.
+      - analytics-engineered-data:/data
+      # Mount-over the baked-in seed-based init with the engineered
+      # variant: no seed, just CREATE VIEW over read_parquet for
+      # each dbt model output.
+      - ./quack-server/init-engineered.sql.tmpl:/quack/init.sql.tmpl:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "9494"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+    depends_on:
+      dagster:
+        condition: service_healthy
+
 volumes:
   cube-data:
   superset-data:
+  analytics-engineered-data:
+  dagster-home:

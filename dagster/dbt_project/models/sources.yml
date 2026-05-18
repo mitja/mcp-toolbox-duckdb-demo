@@ -1,0 +1,42 @@
+# Declare the dlt-produced Parquet snapshot as a dbt source. The
+# `external_location` meta is dbt-duckdb-specific — instead of
+# resolving `{{ source(...) }}` to a `database.schema.table` triple,
+# dbt-duckdb substitutes the literal string into the FROM clause.
+# That lets the source reference live Parquet files on disk.
+#
+# dlt's filesystem destination writes each table to
+# `<bucket_url>/<dataset_name>/<table_name>/<run_id>.parquet`, so
+# we glob the directory.
+
+version: 2
+
+sources:
+  - name: raw
+    schema: web_events
+    description: >-
+      Raw events Parquet snapshot, produced by the web_events dlt
+      pipeline (dlt_pipeline.py). Refreshed every Dagster
+      materialization; the previous snapshot is replaced.
+    tables:
+      - name: events
+        description: One row per captured web event.
+        meta:
+          # dlt writes Parquet to this directory (loader format
+          # pinned via the dagster service's
+          # DESTINATION__FILESYSTEM__LOADER_FILE_FORMAT env var).
+          external_location: "read_parquet('/data/raw/web_events/events/*.parquet')"
+        columns:
+          - name: event_id
+            description: Monotonically-increasing per-pipeline-run primary key.
+          - name: ts
+            description: UTC timestamp the event was fired.
+          - name: user_id
+            description: Anonymous user identifier.
+          - name: country
+            description: ISO-3166-1 alpha-2 country code (DE, FR, GB, ...).
+          - name: page
+            description: Site path the event fired on.
+          - name: event_type
+            description: page_view · click · scroll.
+          - name: session_id
+            description: Browser session identifier.

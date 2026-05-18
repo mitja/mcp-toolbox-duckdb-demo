@@ -1,0 +1,24 @@
+name: web_events
+version: "1.0.0"
+config-version: 2
+
+profile: web_events
+
+model-paths: ["models"]
+
+target-path: target
+clean-targets:
+  - target
+  - dbt_packages
+
+# Default materialization is `external` (dbt-duckdb feature) so each
+# model writes a Parquet file under `external_root` (set in
+# profiles.yml). quack-server-3's init.sql creates a VIEW over each
+# of those Parquets so the in-process DuckDB on the Toolbox side
+# sees them as normal tables through ATTACH. Override per-model with
+# `materialized: view` for staging models that don't need to land.
+models:
+  web_events:
+    +materialized: external
+    +format: parquet
+    +schema: analytics

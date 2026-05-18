@@ -35,6 +35,23 @@ sources:
       max_rows: 1000
       timeout: 30s
 
+  # Engineered warehouse — quack-server-3 wraps the Parquet files
+  # produced by the data-engineering track (dlt + dbt-duckdb +
+  # Dagster). The Quack server holds no data of its own; it exposes
+  # views over the dbt model outputs in /data/marts/. See the README
+  # "Data engineering pipeline (dlt + dbt-duckdb + Dagster)" section.
+  analytics-engineered:
+    type: duckdb-quack
+    uri: quack:quack-server-3:9494
+    token: ${QUACK_TOKEN}
+    disable_ssl: true
+    attach_alias: engineered_remote
+    policy:
+      read_only: true
+      reject_multiple_statements: true
+      max_rows: 1000
+      timeout: 30s
+
   # Multi-attach source: one in-process DuckDB with BOTH Quack servers
   # ATTACHed. Tools wired here can write a single SQL that references
   # both remote catalogs in the same query — DuckDB pulls rows from
@@ -291,6 +308,54 @@ tools:
     table: sales
 
   # ---------------------------------------------------------------
+  # Tools over the engineered warehouse (analytics-engineered source).
+  # The data behind these views is produced by the Dagster-orchestrated
+  # dlt + dbt-duckdb pipeline (see dagster/ in this repo). Each query
+  # hits read_parquet on the Toolbox-side ATTACH, which in turn reads
+  # the dbt-produced /data/marts/*.parquet snapshot on quack-server-3.
+  # ---------------------------------------------------------------
+
+  top_pages_30d:
+    type: duckdb-sql
+    source: analytics-engineered
+    description: >-
+      Top pages by views in the trailing 30 days, with distinct user
+      and session counts. Powered by the `top_pages_30d` dbt model
+      in dagster/dbt_project/models/.
+    parameters: []
+    statement: |
+      SELECT
+        page,
+        page_views_30d,
+        unique_users_30d,
+        sessions_30d
+      FROM engineered_remote.top_pages_30d
+      ORDER BY page_views_30d DESC
+
+  daily_traffic_for_country:
+    type: duckdb-sql
+    source: analytics-engineered
+    description: >-
+      Daily traffic counts for one country, latest dates first.
+      Country code is ISO-3166-1 alpha-2 (DE, FR, GB, US, ES, IT, NL).
+      Powered by the `daily_traffic` dbt model.
+    parameters:
+      - name: country
+        type: string
+        description: ISO 2-letter country code (e.g. "DE").
+    statement: |
+      SELECT
+        event_date,
+        country,
+        page_views,
+        unique_users,
+        sessions
+      FROM engineered_remote.daily_traffic
+      WHERE country = ?
+      ORDER BY event_date DESC
+      LIMIT 30
+
+  # ---------------------------------------------------------------
   # Cube-backed tools — the agent surface of the same semantic model
   # that backs Cube's BI surface (Cube REST/SQL API on :4000/:15432).
   # The cube definitions live in cube/model/cubes/*.yml; the tool
@@ -417,3 +482,12 @@ toolsets:
   analytics_cube_backed:
     - cube_sales_revenue_by_customer
     - cube_orders_top_products
+
+  # Engineered-warehouse toolset: tools whose data flows through the
+  # Dagster-orchestrated dlt + dbt-duckdb pipeline (see dagster/ in
+  # this repo). The Toolbox sees the dbt outputs through quack-server-3
+  # as ordinary views; the agent doesn't need to know there's a
+  # pipeline behind them.
+  analytics_engineered:
+    - top_pages_30d
+    - daily_traffic_for_country
