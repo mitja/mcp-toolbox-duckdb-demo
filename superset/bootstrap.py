@@ -220,20 +220,23 @@ def ensure_chart(s: Superset, dataset_id: int) -> dict:
         if row["slice_name"] == CHART_NAME:
             print(f"bootstrap: chart {CHART_NAME!r} already exists (id={row['id']})")
             return row
-    # Chart params encode the column/metric selection. Use bar chart
-    # with customer on x-axis and the `revenue` saved-metric on y
-    # (which expands to MEASURE(revenue) on Cube's pg API, see
-    # ensure_dataset_metrics). Same shape as the Cube REST query used
-    # in the walkthrough notebook §9.
+    # Chart params encode the column/metric selection. Use the
+    # categorical bar viz (dist_bar) — `customer` goes on the x-axis
+    # via groupby (NOT x_axis, which the time-series bar viz uses
+    # and which conflicts when the column also appears in groupby:
+    # "Duplicate column/metric labels"). Y-axis is the saved metric
+    # `revenue` which expands to MEASURE(revenue) on Cube's pg API
+    # (see ensure_dataset_metrics).
     chart_params = {
-        "viz_type": "echarts_timeseries_bar",
+        "viz_type": "dist_bar",
         "datasource": f"{dataset_id}__table",
         "metrics": ["revenue"],
         "groupby": ["customer"],
-        "x_axis": "customer",
         "row_limit": 1000,
-        "show_value": True,
+        "show_legend": False,
+        "show_bar_value": True,
         "order_desc": True,
+        "color_scheme": "supersetColors",
     }
     import json as _json
     payload = {
@@ -242,7 +245,6 @@ def ensure_chart(s: Superset, dataset_id: int) -> dict:
         "datasource_id": dataset_id,
         "datasource_type": "table",
         "params": _json.dumps(chart_params),
-        "query_context": "",
     }
     r = s.post("/api/v1/chart/", json=payload)
     if not r.ok:
