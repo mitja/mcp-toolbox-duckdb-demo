@@ -213,15 +213,17 @@
   <text x="760" y="258" text-anchor="middle" class="arrow-label" fill="#4a5568">:5555/ui</text>
 
   <!-- Host: Browser → Superset (third pill → superset container).
-       Routes around the right edge of the docker panel to clear the
-       cube box that sits between the pill and the superset box. -->
-  <path d="M 895,210 C 895,300 1160,400 1140,815" class="arrow a-gray" marker-end="url(#arr-gray)"/>
+       Long path because Superset sits at the bottom-right of the
+       docker panel; route the curve into the gap between the
+       otel-collector/jaeger column and the docker panel's right
+       edge, hugging the right side without bulging off-canvas. -->
+  <path d="M 895,210 C 895,360 1145,560 1145,815" class="arrow a-gray" marker-end="url(#arr-gray)"/>
   <rect x="855" y="244" width="100" height="18" class="arrow-label-bg"/>
   <text x="905" y="258" text-anchor="middle" class="arrow-label" fill="#4a5568">:8088 UI</text>
 
   <!-- Host: Browser → Jaeger UI (right pill → jaeger). Curves out to
        the right of the docker panel to clear the otel-collector box. -->
-  <path d="M 1030,210 C 1080,260 1100,440 1140,580" class="arrow a-gray" marker-end="url(#arr-gray)"/>
+  <path d="M 1030,210 C 1060,290 1080,480 1140,580" class="arrow a-gray" marker-end="url(#arr-gray)"/>
   <rect x="1080" y="244" width="80" height="18" class="arrow-label-bg"/>
   <text x="1120" y="258" text-anchor="middle" class="arrow-label" fill="#4a5568">:16686</text>
 
