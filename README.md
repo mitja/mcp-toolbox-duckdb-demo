@@ -754,6 +754,11 @@ The same pattern works for `cube_orders_top_products` (measures
 `orders.total_qty` + `orders.distinct_customers`, dimension
 `orders.product`).
 
+For an interactive side-by-side comparison that runs both surfaces
+and asserts the rows match, see
+[`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb) §9
+("Semantic-layer integration with Cube — both surfaces").
+
 ### Sync today: codegen; runtime federation: not yet
 
 The `cube_*` tools in `tools.yaml` are **generated** from the cube

@@ -228,14 +228,15 @@
   <text x="430" y="672" text-anchor="middle" class="arrow-label" fill="#c05621">combined-analytics · multi-attach</text>
 
   <!-- Cube → Toolbox: dashed-purple "model sync" arrow that represents
-       the conceptual relationship between Cube's YAML definitions and
-       the cube_* Toolbox tools' SQL. Today the sync is by hand
-       (see README "Semantic-layer integration with Cube"); the arrow
-       is a placeholder for the runtime-federation path that
-       postgres_scanner cannot supply yet (NOTES.md). -->
+       the relationship between Cube's YAML definitions and the
+       cube_* Toolbox tools' SQL. Today the sync runs via the
+       cube/gen_toolbox_from_cube.py codegen step (cube YAML +
+       cube/codegen.yml -> tools.yaml entries between sentinels);
+       this arrow is also the placeholder for the runtime-federation
+       path that postgres_scanner cannot supply yet (NOTES.md). -->
   <path d="M 840,678 C 820,640 800,620 780,605" class="arrow a-purple-dash" stroke-width="1.4" marker-end="url(#arr-purple)"/>
   <rect x="780" y="650" width="120" height="16" class="arrow-label-bg"/>
-  <text x="840" y="662" text-anchor="middle" class="arrow-label" fill="#805ad5">manual SQL sync</text>
+  <text x="840" y="662" text-anchor="middle" class="arrow-label" fill="#805ad5">codegen sync</text>
 
   <!-- Toolbox → otel-collector (OTLP) -->
   <path d="M 780,496 L 820,496" class="arrow a-green" marker-end="url(#arr-green)"/>
