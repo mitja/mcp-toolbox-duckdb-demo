@@ -22,17 +22,25 @@ What's running, top to bottom:
   verifier), `langgraph` (`--profile agent`, needs Anthropic API
   key), `inspector` (`--profile inspect`, MCP Inspector UI + proxy).
 - **Toolbox** (`toolbox:5000`) — the MCP Toolbox server from the
-  fork. One in-process DuckDB (CGO `duckdb-go`) per source, each
-  holding its own Quack `ATTACH`. The same statement validator runs
-  at config-load and per-invocation; OTel span `duckdb.query` plus 5
-  metrics emit on every call.
+  fork. One in-process DuckDB (CGO `duckdb-go`) per source, three
+  sources total: `sales-quack` and `inventory-quack` are
+  single-`ATTACH`, and `combined-analytics` is multi-attach (both
+  Quack servers wired into the same DuckDB so a tool can join across
+  catalogs in one statement). `duckdb-sql` tools can also set
+  `push_down_to_remote: true` to ship the whole statement through
+  `quack_query()` so a join executes on the remote side. The same
+  statement validator runs at config-load and per-invocation; OTel
+  span `duckdb.query` plus 5 metrics emit on every call.
 - **`quack-server` + `quack-server-2` (`:9494`)** — two separate
   DuckDB+Quack processes wired as the `sales-quack` and
-  `inventory-quack` sources. Both run the same image, just with a
-  different seed file mounted; both apply the `read_only`
-  authorization callback. The real security boundary — any
-  destructive statement that somehow gets past Toolbox is refused
-  here.
+  `inventory-quack` sources (and jointly as `combined-analytics`).
+  Both run the same image; `quack-server-2` additionally mounts
+  `product_price_history.parquet` and exposes it as a view in
+  `main` via `read_parquet(...)` so the Toolbox-side ATTACH sees it
+  alongside the regular `products` table. Both apply the
+  `read_only` authorization callback — the real security boundary;
+  any destructive statement that somehow gets past Toolbox is
+  refused here.
 - **`otel-collector` + `jaeger`** — always-on, receive spans/metrics
   from anything OTel-instrumented (Toolbox plus any active client).
 

@@ -33,6 +33,7 @@
       .a-blue      { stroke:#2c5282; }
       .a-teal      { stroke:#2c7a7b; }
       .a-orange    { stroke:#c05621; }
+    .a-orange-dash { stroke:#c05621; stroke-dasharray:5 3; }
       .a-green     { stroke:#276749; stroke-dasharray:5 3; }
       .a-gray      { stroke:#718096; stroke-dasharray:3 2; }
       .arrow-label { font-size:11px; fill:#2d3748; }
@@ -107,10 +108,11 @@
     <text x="430" y="498" text-anchor="middle" class="sublabel">endpoints: /mcp (JSON-RPC streamable HTTP) · /api/tool/&lt;name&gt;/invoke · /api/toolset</text>
 
     <rect x="120" y="514" width="620" height="92" rx="5" class="box-inner"/>
-    <text x="430" y="540" text-anchor="middle" class="label">in-process DuckDB (duckdb-go CGO) — one instance per source</text>
-    <text x="430" y="560" text-anchor="middle" class="sublabel">LOAD quack · CREATE OR REPLACE SECRET (TYPE quack, TOKEN '...') · ATTACH 'quack:&lt;server&gt;:9494'</text>
-    <text x="430" y="580" text-anchor="middle" class="sublabel">policy: max_rows, timeout, statement validator, forbidden patterns</text>
-    <text x="430" y="597" text-anchor="middle" class="sublabel">reconnect-on-quack-restart, OTel span (duckdb.query) + 5 metrics</text>
+    <text x="430" y="538" text-anchor="middle" class="label">in-process DuckDB (duckdb-go CGO) — one instance per source · 3 sources</text>
+    <text x="430" y="555" text-anchor="middle" class="sublabel">sales-quack + inventory-quack (single-attach) · combined-analytics (multi-attach, both)</text>
+    <text x="430" y="572" text-anchor="middle" class="sublabel">LOAD quack · CREATE OR REPLACE SECRET (TYPE quack, TOKEN '...') · ATTACH 'quack:&lt;server&gt;:9494'</text>
+    <text x="430" y="589" text-anchor="middle" class="sublabel">policy: max_rows, timeout, statement validator · push_down_to_remote for cross-table joins</text>
+    <text x="430" y="603" text-anchor="middle" class="sublabel">reconnect-on-quack-restart · OTel span (duckdb.query) + 5 metrics</text>
 
     <!-- ==== quack-server and quack-server-2 (always-on, two separate
          DuckDB+Quack processes — same image, different seed mounted). ==== -->
@@ -122,11 +124,12 @@
     <text x="250" y="778" text-anchor="middle" class="badge">source: sales-quack</text>
 
     <rect x="440" y="675" width="340" height="110" rx="6" class="box box-data"/>
-    <text x="610" y="704" text-anchor="middle" class="label">quack-server-2 :9494  (inventory)</text>
-    <text x="610" y="724" text-anchor="middle" class="sublabel">same image, mounted seed-inventory.sql</text>
-    <text x="610" y="742" text-anchor="middle" class="sublabel">products table (~20 rows)</text>
-    <text x="610" y="760" text-anchor="middle" class="sublabel">TOKEN auth · read_only authz</text>
-    <text x="610" y="778" text-anchor="middle" class="badge">source: inventory-quack</text>
+    <text x="610" y="700" text-anchor="middle" class="label">quack-server-2 :9494  (inventory)</text>
+    <text x="610" y="717" text-anchor="middle" class="sublabel">same image, mounted seed-inventory.sql</text>
+    <text x="610" y="734" text-anchor="middle" class="sublabel">products (~20 rows)</text>
+    <text x="610" y="751" text-anchor="middle" class="sublabel">+ product_price_history VIEW over read_parquet</text>
+    <text x="610" y="768" text-anchor="middle" class="sublabel">TOKEN auth · read_only authz</text>
+    <text x="610" y="781" text-anchor="middle" class="badge">source: inventory-quack</text>
 
     <!-- ==== observability column (always-on) ==== -->
     <rect x="820" y="450" width="320" height="92" rx="6" class="box box-obs"/>
@@ -196,6 +199,15 @@
   <rect x="525" y="635" width="170" height="18" class="arrow-label-bg"/>
   <text x="610" y="649" text-anchor="middle" class="arrow-label" fill="#c05621">ATTACH (inventory-quack)</text>
 
+  <!-- combined-analytics multi-attach: one source ATTACHes both Quack
+       servers into the same in-process DuckDB so a single SQL can join
+       across catalogs. Two thin dashed-orange arrows from a shared
+       origin between the two solid ATTACH arrows. -->
+  <path d="M 430,620 C 400,640 330,662 320,675" class="arrow a-orange-dash" stroke-width="1.2" marker-end="url(#arr-orange)"/>
+  <path d="M 430,620 C 460,640 530,662 540,675" class="arrow a-orange-dash" stroke-width="1.2" marker-end="url(#arr-orange)"/>
+  <rect x="338" y="660" width="184" height="16" class="arrow-label-bg"/>
+  <text x="430" y="672" text-anchor="middle" class="arrow-label" fill="#c05621">combined-analytics · multi-attach</text>
+
   <!-- Toolbox → otel-collector (OTLP) -->
   <path d="M 780,496 L 820,496" class="arrow a-green" marker-end="url(#arr-green)"/>
   <rect x="780" y="478" width="42" height="16" class="arrow-label-bg"/>
@@ -217,12 +229,15 @@
     <text x="254" y="0" font-size="11" fill="#4a5568">HTTP /api</text>
 
     <line x1="328" y1="-4" x2="368" y2="-4" stroke="#c05621" stroke-width="1.6"/>
-    <text x="374" y="0" font-size="11" fill="#4a5568">Quack remote (ATTACH)</text>
+    <text x="374" y="0" font-size="11" fill="#4a5568">ATTACH (one per source)</text>
 
-    <line x1="528" y1="-4" x2="568" y2="-4" stroke="#276749" stroke-width="1.6" stroke-dasharray="5 3"/>
-    <text x="574" y="0" font-size="11" fill="#4a5568">OTLP spans + metrics</text>
+    <line x1="510" y1="-4" x2="550" y2="-4" stroke="#c05621" stroke-width="1.2" stroke-dasharray="5 3"/>
+    <text x="556" y="0" font-size="11" fill="#4a5568">multi-attach (one source, both servers)</text>
 
-    <line x1="724" y1="-4" x2="764" y2="-4" stroke="#718096" stroke-width="1.6" stroke-dasharray="3 2"/>
-    <text x="770" y="0" font-size="11" fill="#4a5568">Browser → web UI (host)</text>
+    <line x1="776" y1="-4" x2="816" y2="-4" stroke="#276749" stroke-width="1.6" stroke-dasharray="5 3"/>
+    <text x="822" y="0" font-size="11" fill="#4a5568">OTLP</text>
+
+    <line x1="858" y1="-4" x2="898" y2="-4" stroke="#718096" stroke-width="1.6" stroke-dasharray="3 2"/>
+    <text x="904" y="0" font-size="11" fill="#4a5568">Browser → web UI</text>
   </g>
 </svg>
