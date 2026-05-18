@@ -13,11 +13,12 @@ What's running, top to bottom:
 
 - **Host clients** — Claude Code via MCP at `localhost:5555/mcp`,
   `curl`/notebook against `/api/tool/<name>/invoke`, and your browser
-  for four web UIs: **MCP Inspector** (`:6274`), the built-in
+  for five web UIs: **MCP Inspector** (`:6274`), the built-in
   **Toolbox UI** (`:5555/ui` — tool browser + invoker shipped with
   Toolbox), **Cube Playground** (`:4000` — the semantic-layer
-  authoring + query UI; same model that backs the `cube_*` tools),
-  and **Jaeger** (`:16686`).
+  authoring + query UI), **Apache Superset** (`:8088` — the BI
+  surface, with a pre-built dashboard over Cube), and **Jaeger**
+  (`:16686`).
 - **In-network clients (profile-gated)** — `trace-client`
   (`--profile trace`, single-call OTel demo), `trace-load`
   (`--profile load`, concurrent multi-source burst with PASS/FAIL
@@ -53,6 +54,12 @@ What's running, top to bottom:
   the authoring authority for the `cube_*` Toolbox tools in the
   `analytics_cube_backed` toolset. See "Semantic-layer integration
   with Cube" below for the architecture story.
+- **`superset`** — Apache Superset (Apache 2.0) wired to Cube via
+  the Postgres SQL API. An idempotent bootstrap creates an admin
+  user, registers Cube as a database, and pre-builds one dataset +
+  one chart + one dashboard against the `sales` cube. The dashboard
+  is the visual proof that the semantic model serves a real BI
+  client. See "BI dashboard with Apache Superset" below.
 
 ## Prerequisites
 
@@ -839,6 +846,80 @@ A few honest tradeoffs:
   For very simple agent surfaces (a single curated SQL tool, no BI
   consumer), it's overkill — write `duckdb-sql` tools directly.
 
+## BI dashboard with Apache Superset
+
+Apache Superset (Apache 2.0) is wired in as a sidecar to demonstrate
+the **other** half of the one-model-two-surfaces story: the same
+cubes that back the `cube_*` Toolbox tools also drive a real BI
+dashboard, served by Superset over Cube's Postgres SQL API. No
+warehouse-side definitions are duplicated; both surfaces query the
+same `sales` cube.
+
+```bash
+docker compose up -d cube superset
+# First-boot bootstrap takes ~60s while Superset migrates its
+# metastore. Watch `docker compose logs -f superset | grep bootstrap`.
+open http://localhost:8088   # admin / admin
+```
+
+After the bootstrap finishes, three things exist in Superset:
+
+| Object        | Name                                          | What it is                                                      |
+|---------------|-----------------------------------------------|-----------------------------------------------------------------|
+| Database      | `Cube (semantic layer)`                       | SQLAlchemy URL `postgresql+psycopg2://cube:cube@cube:15432/db`. |
+| Dataset       | `sales`                                       | Maps to the `sales` cube; saved metrics `revenue` (= `MEASURE(revenue)`) and `order_count`. |
+| Chart         | `Revenue by customer (Cube)`                  | Bar chart, dimension `customer`, metric `revenue`.              |
+| Dashboard     | `MCP Toolbox demo — Cube semantic layer`      | Hosts the chart at `/superset/dashboard/mcp-toolbox-cube-demo/`.|
+
+The dashboard URL: <http://localhost:8088/superset/dashboard/mcp-toolbox-cube-demo/>.
+
+The same six rows you see in the bar chart are what
+[`cube_sales_revenue_by_customer`](tools.yaml) returns through MCP
+and what Cube's REST API returns directly — verified end-to-end by
+the assertion in walkthrough notebook §9.
+
+### How the bootstrap works
+
+[`superset/bootstrap.sh`](superset/bootstrap.sh) and
+[`superset/bootstrap.py`](superset/bootstrap.py) implement an
+idempotent setup driven by Superset's REST API:
+
+1. `superset db upgrade` (metastore migrations).
+2. `superset fab create-admin` (admin / admin for the demo).
+3. `superset init` (default roles + permissions).
+4. Start `gunicorn`; wait for `/health`.
+5. POST the Cube database connection if it doesn't already exist.
+6. POST the dataset over the `sales` cube. Superset's
+   auto-introspection picks up Cube's columns (measures appear as
+   columns: `revenue`, `order_count`, `avg_order_value`; plus
+   dimensions and `__user`/`__cubeJoinField` internals).
+7. PUT saved metrics on the dataset: `revenue` →
+   `MEASURE(revenue)`, `order_count` → `MEASURE(order_count)`.
+   Without these, Superset would try to `SUM(revenue)` and Cube
+   would refuse (the column is already a measure).
+8. POST the chart and the dashboard, then link them on both sides
+   (`position_json` on the dashboard *and* `dashboards: [id]` on
+   the chart — Superset 4.x needs both).
+
+Every step short-circuits if the object already exists, so
+`docker compose restart superset` is a no-op. The metastore lives
+in a Compose volume (`superset-data`) so dashboards you create
+yourself in the UI also persist.
+
+### A few honest tradeoffs
+
+- **Superset speaks Postgres; Cube emulates Postgres.** This
+  combination works (Cube ships explicit Superset compatibility),
+  but it is a narrower surface than DuckDB's `postgres_scanner`
+  needs — see [`NOTES.md`](NOTES.md) for why we couldn't use the
+  same Postgres bridge from Toolbox.
+- **The bootstrap creates one chart for one cube.** Add more
+  by extending [`superset/bootstrap.py`](superset/bootstrap.py)
+  (or interactively in the UI — the dashboard will persist).
+- **Demo credentials are admin / admin.** Fine for localhost; do
+  not deploy this layout to anything reachable beyond loopback
+  without rotating `SUPERSET_SECRET_KEY` and the admin password.
+
 ## LangGraph agent demo
 
 ```bash
@@ -992,7 +1073,7 @@ a backstop against bugs or future raw-SQL tool surfaces.
 
 ```
 .
-├── docker-compose.yaml         # always-on: quack-server, quack-server-2, toolbox, otel-collector, jaeger, cube, cube-seed
+├── docker-compose.yaml         # always-on: quack-server, quack-server-2, toolbox, otel-collector, jaeger, cube, cube-seed, superset
 │                               # profile-gated: trace-client, trace-load, langgraph, inspector
 ├── tools.yaml                  # MCP Toolbox source + tool config (6 toolsets, 3 sources)
 ├── quack-server/
@@ -1024,6 +1105,10 @@ a backstop against bugs or future raw-SQL tool surfaces.
 │   ├── model/cubes/                  # sales.yml + orders.yml (measures + dimensions)
 │   ├── codegen.yml                   # slice list — which (cube × measures × dimensions) become tools
 │   └── gen_toolbox_from_cube.py      # cube YAML + codegen.yml → cube_* entries in tools.yaml
+├── superset/                          # Apache Superset BI sidecar (Cube → Superset → dashboard)
+│   ├── superset_config.py            # SECRET_KEY, ROW_LIMIT, Talisman off for the demo
+│   ├── bootstrap.sh                  # idempotent: db upgrade + create-admin + init + gunicorn
+│   └── bootstrap.py                  # REST-API bootstrap: database + dataset + chart + dashboard
 ├── docs/
 │   └── stack.svg               # architecture diagram (rendered at the top of this README)
 ├── .env.example

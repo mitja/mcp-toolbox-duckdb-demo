@@ -326,11 +326,83 @@ services:
       cube-seed:
         condition: service_completed_successfully
     healthcheck:
-      # Cube exposes a readyz endpoint on the REST port.
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/readyz | grep -q HEALTH"]
+      # Cube exposes a readyz endpoint on the REST port. The image
+      # has no wget/curl/nc, just Node — drive it via a one-liner
+      # that exits non-zero on any HTTP error or response other
+      # than {"health":"HEALTH"}.
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - >-
+          require('http').get('http://127.0.0.1:4000/readyz', r => {
+            let b = ''; r.on('data', c => b += c);
+            r.on('end', () => { if (r.statusCode === 200 && b.includes('HEALTH')) process.exit(0); else process.exit(1); });
+          }).on('error', () => process.exit(1));
       interval: 3s
       timeout: 2s
       retries: 40
 
+  # ---------------------------------------------------------------
+  # Superset — Apache Superset (Apache 2.0) wired to Cube's SQL API
+  # to demonstrate the BI surface of the semantic layer. The same
+  # cubes that back the cube_* Toolbox tools (codegen'd from
+  # cube/model/cubes/*.yml) are what Superset queries through
+  # postgresql+psycopg2://cube:cube@cube:15432/db.
+  #
+  # bootstrap.sh:
+  #   1. `superset db upgrade`  (apply metastore migrations)
+  #   2. `superset fab create-admin --username admin --password admin`
+  #   3. `superset init`
+  #   4. start gunicorn on :8088
+  #   5. wait for /health, run bootstrap.py (registers the Cube DB +
+  #      pre-builds dataset + chart + dashboard via Superset REST API)
+  #
+  # All steps are idempotent so `docker compose restart superset`
+  # is safe. Metastore lives in a Compose volume so dashboards
+  # persist across restarts.
+  # ---------------------------------------------------------------
+  superset:
+    # The upstream apache/superset image ships SQLAlchemy but no
+    # Postgres driver. psycopg2-binary is the standard Superset
+    # add-on for talking to Postgres-protocol backends (including
+    # Cube's SQL API). Extend the image inline so the demo stays
+    # in this one Compose file with no separate Dockerfile.
+    build:
+      context: ./superset
+      dockerfile_inline: |
+        FROM apache/superset:4.1.2
+        USER root
+        RUN pip install --no-cache-dir psycopg2-binary==2.9.9
+        USER superset
+    container_name: superset
+    user: "root"  # bootstrap.sh writes to /app and chowns later if needed
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-demo-not-a-secret-rotate-me-before-prod}
+      SUPERSET_LOAD_EXAMPLES: "no"
+      SUPERSET_ADMIN_USERNAME: admin
+      SUPERSET_ADMIN_PASSWORD: admin
+      SUPERSET_ADMIN_EMAIL: admin@example.com
+      # PYTHONPATH so superset_config.py is found.
+      PYTHONPATH: /app/pythonpath
+    volumes:
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py:ro
+      - ./superset/bootstrap.sh:/app/bootstrap.sh:ro
+      - ./superset/bootstrap.py:/app/bootstrap.py:ro
+      - superset-data:/app/superset_home
+    ports:
+      - "8088:8088"
+    entrypoint: ["/bin/bash", "/app/bootstrap.sh"]
+    depends_on:
+      cube:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8088/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 60s
+
 volumes:
   cube-data:
+  superset-data:
