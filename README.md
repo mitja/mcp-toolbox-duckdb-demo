@@ -754,13 +754,52 @@ The same pattern works for `cube_orders_top_products` (measures
 `orders.total_qty` + `orders.distinct_customers`, dimension
 `orders.product`).
 
-### Sync today: by hand; runtime federation: not yet
+### Sync today: codegen; runtime federation: not yet
 
-Today the sync between Cube definitions and Toolbox SQL is **by
-discipline**. The cube YAML is the authoring authority; the
-corresponding tool's SQL hand-mirrors the cube's measure/dimension
-SQL fragments. A code-gen step that reads the cube manifest and
-emits Toolbox tool entries would be a small, future addition.
+The `cube_*` tools in `tools.yaml` are **generated** from the cube
+YAML by [`cube/gen_toolbox_from_cube.py`](cube/gen_toolbox_from_cube.py).
+The script reads `cube/model/cubes/*.yml` (the model authority) plus
+[`cube/codegen.yml`](cube/codegen.yml) (a small human-authored list
+of "which slices to expose as named tools"), and emits the
+corresponding `duckdb-sql` tool entries into the sentinel-managed
+block between `# BEGIN cube-generated` and `# END cube-generated`
+in `tools.yaml`. To add or change a Cube-backed tool:
+
+```bash
+# 1. Edit cube YAML (measure definitions, sql fragments, joins, ...)
+$EDITOR cube/model/cubes/sales.yml
+
+# 2. Edit codegen.yml if adding a new slice (new tool_name × measures × dimensions)
+$EDITOR cube/codegen.yml
+
+# 3. Regenerate the tools.yaml block
+uv run --no-project --with pyyaml python3 cube/gen_toolbox_from_cube.py
+# (Use --stdout to preview the snippet without touching tools.yaml.)
+
+# 4. If you added a slice: add its tool_name to the analytics_cube_backed
+#    toolset in tools.yaml by hand (the toolset entry is not generated).
+
+# 5. Restart Toolbox to pick up the changes
+docker compose restart toolbox
+```
+
+What's *still* manual: the `analytics_cube_backed` toolset entry
+(adding a generated tool's name to the toolset list), and tools with
+bound `parameters:` — the codegen only emits parameterless aggregates
+today.
+
+**Runtime federation is what we'd actually want** — the in-process
+DuckDB in Toolbox `ATTACH`ing Cube's SQL API directly, so the
+Toolbox tool's SQL could just `SELECT * FROM cube_pg.sales` and let
+Cube compile measures. We tried that with DuckDB's `postgres_scanner`
+extension; it doesn't work today. The `ATTACH` succeeds, but
+`postgres_scanner` issues catalog probes (`pg_indexes`, `pg_class`
+compound joins) and wraps reads in `COPY … TO STDOUT (FORMAT
+binary)` — neither of which Cube's pg-protocol implementation
+supports. Until Cube widens its pg surface (or `postgres_scanner`
+gains a "minimum-Postgres" mode), codegen is the tightest sync we
+can offer. See [`NOTES.md`](NOTES.md) for the compatibility
+writeup.
 
 **Runtime federation is what we'd actually want** — the in-process
 DuckDB in Toolbox `ATTACH`ing Cube's SQL API directly, so the
@@ -785,10 +824,12 @@ A few honest tradeoffs:
 - **Pro:** Cube already supports many warehouses (DuckDB, Postgres,
   BigQuery, Snowflake, …); swapping the storage backend doesn't
   change the agent contract.
-- **Con (today):** The manual SQL mirror needs to be kept in sync.
-  Cube can grow new measures faster than the Toolbox tools mirror
-  them. A code-gen step closes this gap; a runtime ATTACH closes it
-  fully.
+- **Con (today):** Cube can grow new measures faster than the
+  curated `analytics_cube_backed` toolset surfaces them. The
+  codegen flow above closes the SQL-fragment gap (a measure SQL
+  change re-flows into the tool); it does *not* invent new slices.
+  A runtime ATTACH (blocked by Cube↔postgres_scanner compatibility
+  today) would close both gaps.
 - **Con (architectural):** Cube adds a service to the deployment.
   For very simple agent surfaces (a single curated SQL tool, no BI
   consumer), it's overkill — write `duckdb-sql` tools directly.
@@ -975,7 +1016,9 @@ a backstop against bugs or future raw-SQL tool surfaces.
 ├── pi/
 │   └── pi_config.example.json       # four servers, each scoped to one toolset
 ├── cube/                             # Cube Core semantic layer
-│   └── model/cubes/                  # sales.yml + orders.yml (measures + dimensions)
+│   ├── model/cubes/                  # sales.yml + orders.yml (measures + dimensions)
+│   ├── codegen.yml                   # slice list — which (cube × measures × dimensions) become tools
+│   └── gen_toolbox_from_cube.py      # cube YAML + codegen.yml → cube_* entries in tools.yaml
 ├── docs/
 │   └── stack.svg               # architecture diagram (rendered at the top of this README)
 ├── .env.example

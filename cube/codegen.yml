@@ -1,0 +1,57 @@
+# Codegen config consumed by `cube/gen_toolbox_from_cube.py`.
+#
+# Each entry under `slices` defines one Toolbox tool that materializes
+# a specific {measures × dimensions} query from a cube. The script
+# reads `cube/model/cubes/*.yml` for the cube definitions (measures'
+# SQL fragments, dimensions' SQL fragments, sql_table) and emits the
+# corresponding `duckdb-sql` tool entry into `tools.yaml` between
+# sentinel comments.
+#
+# Why a list of slices instead of generating every combination? A
+# cube with N measures and M dimensions has N×M possible "natural"
+# queries; very few are worth exposing as named, curated agent tools.
+# This file is the human-authored selection.
+#
+# To add a tool: append a slice here, rerun the codegen.
+# To change a measure's SQL fragment: edit the cube YAML and rerun.
+# Both changes flow into tools.yaml automatically.
+
+# Toolbox source the generated tools bind to. Must already exist in
+# tools.yaml. (`sales-quack` is the duckdb-quack source pointing at
+# quack-server's DuckDB, where the warehouse rows live.)
+target_source: sales-quack
+
+# Catalog alias the source ATTACHes the remote DuckDB under — used
+# to qualify the cube's sql_table in the generated SQL. The cube
+# YAML's `sql_table: main.sales` becomes `<attach_alias>.sales`.
+attach_alias: remote
+
+# Optional toolset name to surface in the generated header comment.
+# The toolset entry itself in tools.yaml stays hand-maintained — add
+# a generated tool's name there after rerunning the script.
+toolset_name: analytics_cube_backed
+
+slices:
+  - tool_name: cube_sales_revenue_by_customer
+    cube: sales
+    measures:
+      - revenue
+      - order_count
+    dimensions:
+      - customer
+    order_by: revenue desc
+    description_prefix: >-
+      Total revenue and order count per customer, sorted descending
+      by revenue.
+
+  - tool_name: cube_orders_top_products
+    cube: orders
+    measures:
+      - total_qty
+      - distinct_customers
+    dimensions:
+      - product
+    order_by: total_qty desc
+    description_prefix: >-
+      Top products by total quantity shipped, with the count of
+      distinct customers per product.
