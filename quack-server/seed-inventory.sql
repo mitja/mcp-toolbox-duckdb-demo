@@ -32,3 +32,13 @@ INSERT INTO products VALUES
     (18, 'Threadlock 50ml',    'Consumables',  44,  25,   9.20),
     (19, 'Cleaning Solvent',   'Consumables', 130,  50,   7.65),
     (20, 'Calibration Gauge',  'Tools',         2,   3, 220.00);
+
+-- Price-history reference data, exposed as a view in `main` over
+-- read_parquet. The parquet is mounted at /data/product_price_history.parquet
+-- (see docker-compose.yaml). Putting the view in `main` matches the
+-- pattern in NOTES.md "Pattern: federate non-DuckDB backends *inside*
+-- the remote Quack server" — Toolbox-side ATTACH enumerates `main`
+-- reliably, so consumers reach the parquet through the same alias as
+-- the products table.
+CREATE OR REPLACE VIEW main.product_price_history AS
+    SELECT * FROM read_parquet('/data/product_price_history.parquet');

@@ -712,3 +712,166 @@ the federation needs to happen across multiple Quack servers each
 without write access to the others' init.sql). If we ever add a
 demo for this, a third `quack-server-3` with a tiny Postgres
 sidecar ATTACHed would be the minimum-viable example.
+
+## DuckDB: "Multiple streaming scans not currently supported" blocks any join across two ATTACHed remotes
+
+**Status:** Active limitation in DuckDB core (v1.5.2, observed
+2026-05-18). Hit when we wired up the `current_prices` tool that
+joins `inventory_remote.products` with the parquet-backed view
+`inventory_remote.product_price_history` on the same Quack source.
+The underlying DuckDB fix is still pending upstream. The two
+adapter-side improvements documented in this entry are **shipped**
+in the fork (`feat/duckdb-quack`):
+
+- `push_down_to_remote: true` on `duckdb-sql` tools — see
+  `internal/tools/duckdb/duckdbsql/duckdbsql.go` and the
+  `TestInitialize_PushDownToRemote_*` tests. Used in the demo's
+  `current_prices` tool.
+- Friendlier streaming-scan error in `RunSQL` — see
+  `internal/sources/duckdbquack/duckdbquack.go` (`wrapKnownErrors`)
+  and `wrap_errors_internal_test.go`.
+
+**Note on reproducibility.** Whether the error actually fires
+depends on DuckDB's plan choice, which appears to be cost-sensitive.
+The same SQL that failed during initial integration sometimes plans
+into a non-streaming shape on later runs of the same data. The
+unit-test pinning in the fork's wrap_errors test is the load-bearing
+verification for the friendlier-error behavior; the
+`push_down_to_remote` flag is the guaranteed workaround for the
+case where DuckDB does pick the streaming plan.
+
+**Symptom.** A `duckdb-sql` tool whose SQL references **two or more**
+Quack-ATTACHed tables in the same physical plan fails at execution
+with:
+
+```
+Not implemented Error: Multiple streaming scans or streaming scans +
+CTAS / insert in the same query are not currently supported
+```
+
+Both single-source joins (two tables under one alias) and
+multi-attach joins (one table per alias from `additional_attachments`)
+trigger it. Single-table reads are fine. Materialization hints don't
+help — `WITH … AS MATERIALIZED (…)` still has a streaming scan as
+input, and DuckDB checks for the scan, not for the materialization
+boundary.
+
+**Reproducer** (against the demo's `inventory-quack` source):
+
+```sql
+-- fails with the error above
+SELECT p.name, h.unit_price
+FROM   inventory_remote.products p
+LEFT JOIN inventory_remote.product_price_history h
+       ON h.product_name = p.name AND h.valid_to IS NULL;
+```
+
+```sql
+-- also fails; MATERIALIZED does not bypass the planner check
+WITH curr AS MATERIALIZED (
+  SELECT product_name, unit_price
+  FROM inventory_remote.product_price_history
+  WHERE valid_to IS NULL
+)
+SELECT p.name, c.unit_price
+FROM   inventory_remote.products p
+LEFT JOIN curr c ON c.product_name = p.name;
+```
+
+**Workaround we shipped** (visible in `tools.yaml` for `current_prices`):
+push the whole join down to the remote via `quack_query()` so only
+one streaming result-set scan comes back:
+
+```sql
+SELECT *
+FROM quack_query(
+  'quack:quack-server-2:9494',
+  '
+    SELECT p.name, h.unit_price
+    FROM products p
+    LEFT JOIN product_price_history h
+      ON h.product_name = p.name AND h.valid_to IS NULL
+  ',
+  disable_ssl := true
+);
+```
+
+Pros: works today, and incidentally executes the join next to the
+data — usually faster. Cons: the URI is duplicated between the
+source config and every affected tool; you lose the agent-readable
+shape of "this tool joins these attached tables" in favor of an
+opaque string; and it doesn't generalize to *cross-source* joins
+(multi-attach), where there is no single remote you can push to.
+
+**Where the underlying fix belongs.** Three candidates, ranked by
+where the work would actually go:
+
+1. **DuckDB core (`duckdb/duckdb`) — the right place; still open.**
+   The error is raised by the streaming execution engine itself,
+   not by any Quack-specific code. The Quack scanner is a perfectly
+   ordinary `read_quack(...)`-style table function that yields rows
+   lazily; the same constraint would bite any future remote-scan
+   extension built the same way. Lifting it means letting the
+   streaming scheduler drive more than one streaming source in a
+   single pipeline (or auto-materializing the second one). This is
+   a non-trivial planner/executor change, but it is the change with
+   the broadest payoff — and the error message already reads like a
+   known limitation that someone intends to revisit.
+2. **Quack extension (`duckdb/duckdb-quack`) — wrong layer, but
+   possible as a flag.** Quack could expose a "buffered" scan mode
+   on the ATTACH that fully consumes the remote response into a
+   local result set before yielding rows. That would sidestep the
+   streaming-scan constraint, at the cost of the very property that
+   makes Quack interesting (zero-materialization streaming). Worth
+   filing only if the DuckDB core fix is years away.
+3. **Our fork (`mitja/mcp-toolbox-duckdb`) — ergonomics, IMPLEMENTED.**
+   We can't lift the planner restriction from outside DuckDB, but
+   we shipped two adapter improvements that remove the "what is
+   this error and how do I fix it?" cliff for the common
+   single-source case:
+
+   - **`push_down_to_remote: true`** on `duckdb-sql` tools. When
+     the source is a `duckdb-quack` source and the tool has no
+     bound `parameters:` (template parameters are fine — they
+     substitute before the wrap), Invoke routes the statement
+     through the source's `QuackQuery()` method instead of
+     `RunSQL()`. The wrap, instrumentation, and reattach path are
+     identical to the manual `quack_query()` approach we shipped
+     in the demo first. Config-load checks reject the flag on
+     non-quack sources (`source.SourceType()` not duckdb-quack) and
+     on tools that mix it with bound parameters. See
+     `internal/tools/duckdb/duckdbsql/duckdbsql.go` and the
+     `TestInitialize_PushDownToRemote_*` tests in
+     `initialize_test.go`. The demo's `current_prices` tool was
+     converted from the hand-written `quack_query()` wrapper to
+     this flag and works identically end-to-end.
+   - **Friendlier streaming-scan error** in `RunSQL`. The
+     `wrapKnownErrors` helper detects the
+     `"Multiple streaming scans or streaming scans"` substring in
+     a DuckDB error and rewrites the message to name both
+     workarounds (`push_down_to_remote: true` for single-source,
+     manual `quack_query('<primary-uri>', '<sql>', disable_ssl := …)`
+     for multi-attach). The original error is preserved via `%w` so
+     `errors.Is` / `errors.Unwrap` still work. Lives next to
+     `needsReAttach` in `internal/sources/duckdbquack/duckdbquack.go`;
+     pinned by `wrap_errors_internal_test.go`. Doesn't help the
+     cross-source case at runtime (no single remote to push to),
+     but the message at least points the operator at the manual
+     `quack_query()` workaround.
+
+   Neither solves the underlying limitation. The DuckDB core fix
+   is still the right long-term resolution.
+
+**Suggested upstream issue title** (file in `duckdb/duckdb`, not in
+duckdb-quack):
+*"Lift 'Multiple streaming scans … not currently supported' for table
+functions in the same pipeline"* — include the reproducer above
+against any pair of streaming-scan table functions (Quack is the
+clearest demonstration but `read_parquet` parallel scans, the HTTP
+fs scanner, etc. should reproduce the same way).
+
+**Suggested upstream issue title** (file in `duckdb/duckdb-quack`,
+lower priority): *"Optional buffered ATTACH mode to work around
+'Multiple streaming scans not currently supported' in client
+queries"* — only if the DuckDB core fix is not on the near-term
+roadmap.

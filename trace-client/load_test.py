@@ -47,23 +47,29 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 # Fan out across all three sources. Each entry is (tool_name,
 # kwargs_factory) — the factory returns a fresh dict per call so we
-# vary the customer_pattern without sharing mutable state.
+# vary parameters without sharing mutable state.
 #
 # Mix:
 #   - 2 single-source sales tools (push down to quack-server),
 #   - 2 single-source inventory tools (push down to quack-server-2),
+#   - 1 parquet-backed inventory tool: hits the read_parquet view
+#     exposed by the remote DuckDB on quack-server-2; same physical
+#     path as the inventory tools but the rows originate from a
+#     parquet file mounted next to the remote.
 #   - 1 multi-attach tool (combined-analytics): joins inventory.products
 #     with sales.orders in one query, executed locally by the Toolbox-
 #     side DuckDB after rows stream from both remotes. Includes it
 #     deliberately so the latency stats and Jaeger spans show the
 #     local-execution path next to the pushdown path.
 CUSTOMER_PATTERNS = ["gmbh", "corp", "ag", "sarl", "ltd"]
+PRODUCT_PATTERNS  = ["Widget", "Bearing", "Bolt", "Cable", "Soldering"]
 TASKS = [
-    ("revenue_by_customer",     lambda: {"customer_pattern": random.choice(CUSTOMER_PATTERNS)}),
-    ("top_products",            lambda: {}),
-    ("low_stock_items",         lambda: {}),
-    ("inventory_summary",       lambda: {}),
-    ("product_orders_overview", lambda: {}),
+    ("revenue_by_customer",      lambda: {"customer_pattern": random.choice(CUSTOMER_PATTERNS)}),
+    ("top_products",             lambda: {}),
+    ("low_stock_items",          lambda: {}),
+    ("inventory_summary",        lambda: {}),
+    ("price_history_for_product",lambda: {"product_pattern":  random.choice(PRODUCT_PATTERNS)}),
+    ("product_orders_overview",  lambda: {}),
 ]
 
 
@@ -132,7 +138,8 @@ def invoke(tracer: trace.Tracer, toolbox: str, tool: str, args: dict, req_id: in
 
 def run_burst(tracer: trace.Tracer, toolbox: str, n: int) -> list[Result]:
     print(f"firing {n} concurrent calls across {len(TASKS)} tools "
-          f"(3 sources: sales-quack, inventory-quack, combined-analytics)...")
+          f"(3 sources: sales-quack, inventory-quack [incl. parquet-backed view], "
+          f"combined-analytics)...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=n) as pool:
         futs = []
         # Round-robin across tools so each tool gets ~n/4 calls.

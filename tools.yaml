@@ -138,6 +138,71 @@ tools:
       ORDER BY total_units DESC
 
   # ---------------------------------------------------------------
+  # Parquet-backed reference data. The remote DuckDB on
+  # quack-server-2 exposes /data/product_price_history.parquet as a
+  # view in `main` (see quack-server/seed-inventory.sql), so the
+  # Toolbox-side in-process DuckDB sees it through the existing
+  # ATTACH as inventory_remote.product_price_history. The whole
+  # read_parquet call runs on the remote side; only the result rows
+  # cross the wire. Validates the "server-side federation" pattern
+  # from NOTES.md against a non-DuckDB-table source.
+  # ---------------------------------------------------------------
+
+  price_history_for_product:
+    type: duckdb-sql
+    source: inventory-quack
+    description: >-
+      Return the full price history (validity windows + change reason)
+      for one product. The pattern is a plain case-insensitive
+      substring; do not include SQL wildcards yourself. Rows are
+      backed by a parquet file mounted next to the remote DuckDB.
+    parameters:
+      - name: product_pattern
+        type: string
+        description: Case-insensitive product name substring (no wildcards).
+    statement: |
+      SELECT
+        product_name,
+        valid_from,
+        valid_to,
+        unit_price,
+        change_reason
+      FROM inventory_remote.product_price_history
+      WHERE product_name ILIKE '%' || ? || '%'
+      ORDER BY product_name, valid_from
+
+  current_prices:
+    type: duckdb-sql
+    source: inventory-quack
+    description: >-
+      Join the products table with the current (open-ended) row in
+      product_price_history so each SKU is paired with its active
+      price plus the date the current price went into effect.
+      Demonstrates a join between a normal table and a parquet-backed
+      view, both on the same remote Quack server.
+    parameters: []
+    # push_down_to_remote routes the entire statement to the remote
+    # via quack_query() so the join executes next to the parquet file
+    # and only the result rows stream back as a single scan. Without
+    # the flag, the Toolbox-side planner sees two ATTACHed-table
+    # references in one plan and DuckDB rejects with "Multiple
+    # streaming scans … not currently supported". (Implemented in
+    # the duckdb-quack adapter — see NOTES.md for the longer writeup.)
+    push_down_to_remote: true
+    statement: |
+      SELECT
+        p.category,
+        p.name              AS product_name,
+        h.unit_price        AS current_price,
+        h.valid_from        AS price_since,
+        h.change_reason     AS last_change_reason,
+        p.stock_qty
+      FROM products p
+      LEFT JOIN product_price_history h
+        ON h.product_name = p.name AND h.valid_to IS NULL
+      ORDER BY p.category, p.name
+
+  # ---------------------------------------------------------------
   # Cross-catalog tool wired to combined-analytics. The in-process
   # DuckDB has BOTH Quack servers ATTACHed, so this JOIN combines
   # rows from sales-quack.orders and inventory-quack.products in
@@ -274,6 +339,8 @@ toolsets:
   inventory_readonly:
     - low_stock_items
     - inventory_summary
+    - price_history_for_product
+    - current_prices
 
   # Cross-catalog tools: the in-process DuckDB ATTACHes both Quack
   # servers and executes the JOIN locally after rows stream from each.

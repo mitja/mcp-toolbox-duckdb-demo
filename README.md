@@ -121,11 +121,12 @@ http://localhost:6274/?transport=streamable-http&serverUrl=http%3A%2F%2Ftoolbox%
 The query params pre-fill the connection form with **Transport Type
 = Streamable HTTP** and **URL = `http://toolbox:5000/mcp`**. Click
 **Connect**, then **List Tools** in the left pane. You should see
-all twelve tools — `revenue_by_customer`, `top_products`,
-`low_stock_items`, `inventory_summary`, `product_orders_overview`,
-`list_catalogs`, `list_remote_schemas`, `list_remote_tables`,
-`describe_sales`, `describe_orders`, `summarize_sales`, and the
-dev-only `dev_duckdb_execute_sql` — with their input schemas and
+all fourteen tools — `revenue_by_customer`, `top_products`,
+`low_stock_items`, `inventory_summary`, `price_history_for_product`,
+`current_prices`, `product_orders_overview`, `list_catalogs`,
+`list_remote_schemas`, `list_remote_tables`, `describe_sales`,
+`describe_orders`, `summarize_sales`, and the dev-only
+`dev_duckdb_execute_sql` — with their input schemas and
 descriptions. Pick one, fill in params, and click **Run Tool** to
 see the JSON response shape live.
 
@@ -162,7 +163,10 @@ The demo `tools.yaml` exposes five toolsets across three sources
   the agent's perspective — schema/table scope is baked into
   `tools.yaml` so deployment-time RBAC, not runtime tool calls,
   controls what the agent can see.
-- **`inventory_readonly`** — `low_stock_items`, `inventory_summary`.
+- **`inventory_readonly`** — `low_stock_items`, `inventory_summary`,
+  `price_history_for_product`, `current_prices`. The last two are
+  backed by a parquet file mounted next to the remote DuckDB on
+  `quack-server-2` — see [Parquet behind a remote Quack](#parquet-behind-a-remote-quack).
   Curated read-only tools against the second Quack server.
 - **`cross_catalog`** — `product_orders_overview`. The single
   cross-catalog tool that joins inventory products with sales
@@ -464,15 +468,17 @@ older MCP SDKs) lives in [`NOTES.md`](NOTES.md).
 ## Concurrent multi-source load test
 
 [`trace-client/load_test.py`](trace-client/load_test.py) fires N
-parallel MCP `tools/call` requests fanned out across **five tools
+parallel MCP `tools/call` requests fanned out across **six tools
 spanning all three sources** — two against `sales-quack`
-(`revenue_by_customer`, `top_products`), two against
-`inventory-quack` (`low_stock_items`, `inventory_summary`), and one
-against `combined-analytics` (`product_orders_overview`, the
-cross-catalog JOIN that runs locally after rows stream from both
-Quack servers). Each request generates its own root span, embeds
-W3C `traceparent` in MCP `_meta`, and is fully independent. After
-the burst, the script polls the Jaeger HTTP API and asserts:
+(`revenue_by_customer`, `top_products`), three against
+`inventory-quack` (`low_stock_items`, `inventory_summary`, and
+`price_history_for_product`, the last backed by a parquet file
+mounted next to the remote DuckDB), and one against
+`combined-analytics` (`product_orders_overview`, the cross-catalog
+JOIN that runs locally after rows stream from both Quack servers).
+Each request generates its own root span, embeds W3C `traceparent`
+in MCP `_meta`, and is fully independent. After the burst, the
+script polls the Jaeger HTTP API and asserts:
 
 1. Every request returned valid (non-error) JSON.
 2. Every emitted trace ID resolves to a trace that contains a
@@ -491,18 +497,19 @@ N_CONCURRENT=50 docker compose --profile load run --rm trace-load  # bump it
 Sample output at N=25:
 
 ```
-firing 25 concurrent calls across 5 tools (3 sources: sales-quack, inventory-quack, combined-analytics)...
+firing 25 concurrent calls across 6 tools (3 sources: sales-quack, inventory-quack [incl. parquet-backed view], combined-analytics)...
 
 requests:   25 sent, 25 ok, 0 error
-wall time:  0.09s
-throughput: 293.0 req/s
-latency:    avg 0.056s  p50 0.056s  p95 0.074s  max 0.076s
+wall time:  0.07s
+throughput: 366.0 req/s
+latency:    avg 0.040s  p50 0.040s  p95 0.056s  max 0.059s
 by tool:
-  inventory_summary          5 sent,   5 ok, row_count(s)=[7]
-  low_stock_items            5 sent,   5 ok, row_count(s)=[7]
-  product_orders_overview    5 sent,   5 ok, row_count(s)=[20]
-  revenue_by_customer        5 sent,   5 ok, row_count(s)=[1, 2]
-  top_products               5 sent,   5 ok, row_count(s)=[3]
+  inventory_summary          4 sent,   4 ok, row_count(s)=[7]
+  low_stock_items            4 sent,   4 ok, row_count(s)=[7]
+  price_history_for_product  4 sent,   4 ok, row_count(s)=[5]
+  product_orders_overview    4 sent,   4 ok, row_count(s)=[20]
+  revenue_by_customer        5 sent,   5 ok, row_count(s)=[1]
+  top_products               4 sent,   4 ok, row_count(s)=[3]
 
 Jaeger lookup:
   complete traces:    25/25    (contain duckdb.query)
@@ -513,10 +520,14 @@ result: PASS
 
 `product_orders_overview` returns 20 rows because the inventory seed
 has 20 products and the tool LEFT JOINs each one with sales orders;
-the other four tools return at most a handful of rows because they
-aggregate. The local-execution path (the cross-catalog tool) shows
-up alongside the pushdown path in the same Jaeger trace list — easy
-to compare `duckdb.query` durations side-by-side.
+`price_history_for_product` returns five rows because each product
+has four historical price entries plus one current row in the
+parquet fixture; the other tools return at most a handful of rows
+because they aggregate. The local-execution path (the cross-catalog
+tool) shows up alongside the pushdown path (single-source tools
+plus the parquet-backed `price_history_for_product`) in the same
+Jaeger trace list — easy to compare `duckdb.query` durations
+side-by-side.
 
 A few notes:
 
@@ -610,6 +621,71 @@ heuristics that keep the local DuckDB instance lightweight:
 The single-source tools in this demo follow all of the above; the
 multi-source `product_orders_overview` is the deliberate exception
 so you can compare query plans side-by-side in the Jaeger UI.
+
+### Parquet behind a remote Quack
+
+The remote DuckDB inside a Quack server is *just DuckDB* — anything it
+can read, it can expose as a view in `main`, and the Toolbox-side
+in-process DuckDB sees it through the existing `ATTACH` like any
+other table. The adapter itself doesn't need to know.
+
+`quack-server-2` ships with `product_price_history.parquet` mounted
+at `/data/`. The inventory seed wraps it in a view:
+
+```sql
+CREATE OR REPLACE VIEW main.product_price_history AS
+    SELECT * FROM read_parquet('/data/product_price_history.parquet');
+```
+
+Two tools on the `inventory-quack` source exercise it:
+
+```bash
+# Single streaming scan of the parquet view, filtered by ILIKE.
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://localhost:5555/api/tool/price_history_for_product/invoke \
+  -d '{"product_pattern":"Widget"}' \
+  | jq '.result | fromjson | .rows[:3]'
+
+# Join the products table with the parquet view's current rows.
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://localhost:5555/api/tool/current_prices/invoke -d '{}' \
+  | jq '.result | fromjson | .rows[:3]'
+```
+
+```json
+[
+  {"category":"Bearings","product_name":"Bearing 608ZZ","current_price":"3.25","price_since":"2026-01-18T00:00:00Z","last_change_reason":"audit-correction","stock_qty":140},
+  {"category":"Bearings","product_name":"Bearing 6203","current_price":"5.40","price_since":"2025-05-16T00:00:00Z","last_change_reason":"supplier-change","stock_qty":28},
+  {"category":"Cabling","product_name":"Cable Loom 2m","current_price":"6.80","price_since":"2025-12-09T00:00:00Z","last_change_reason":"seasonal-adjust","stock_qty":95}
+]
+```
+
+**Why the join uses `push_down_to_remote: true`.** The Toolbox-side
+DuckDB can reject a plain `SELECT … FROM inventory_remote.products p
+LEFT JOIN inventory_remote.product_price_history h …` with
+*"Multiple streaming scans … not currently supported"* — when its
+planner picks a streaming plan for both ATTACHed-table references,
+DuckDB cannot drive more than one streaming-scan source per
+pipeline. The `current_prices` tool sets `push_down_to_remote:
+true`, which the duckdb-quack adapter implements by routing the
+whole statement through `quack_query(<source-uri>, '<sql>', disable_ssl := …)`:
+the SQL ships to the remote, executes next to the parquet file,
+and only the result rows stream back as one scan. The flag works
+for any single-source `duckdb-quack` tool without bound parameters
+— template parameters still substitute before the wrap. For
+cross-source joins (where there is no single remote to push to)
+the manual `quack_query('<primary-uri>', '<sql>', …)` wrapper is
+still the route. See [`tools.yaml`](tools.yaml) for the
+`current_prices` statement and [`NOTES.md`](NOTES.md) for the
+adapter-side implementation notes (and the upstream DuckDB
+limitation the flag works around).
+
+The fixture itself is reproducible — re-run the generator if you
+change the schema:
+
+```bash
+uv run --no-project --with duckdb python3 quack-server/gen_price_history.py
+```
 
 ## LangGraph agent demo
 
@@ -772,7 +848,9 @@ a backstop against bugs or future raw-SQL tool surfaces.
 │   ├── entrypoint.sh           # envsubst init.sql.tmpl, then duckdb
 │   ├── init.sql.tmpl           # INSTALL/LOAD quack, seed, authz, serve
 │   ├── seed.sql                # baked into image — sales + orders (~30 rows)
-│   └── seed-inventory.sql      # mounted over seed.sql by quack-server-2 — products (~20 rows)
+│   ├── seed-inventory.sql      # mounted over seed.sql by quack-server-2 — products (~20 rows) + parquet view
+│   ├── gen_price_history.py    # reproducible generator for the parquet fixture
+│   └── product_price_history.parquet  # mounted into quack-server-2, exposed as a view in `main`
 ├── otel-collector/
 │   └── config.yaml             # OTLP receivers + jaeger forwarder + debug exporter
 ├── trace-client/               # profiles: trace + load  (Python, no LLM)

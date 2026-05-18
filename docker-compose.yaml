@@ -63,6 +63,11 @@ services:
       QUACK_PORT: "9494"
     volumes:
       - ./quack-server/seed-inventory.sql:/quack/seed.sql:ro
+      # Reference data exposed inside the remote DuckDB as a view over
+      # read_parquet(...). Demonstrates the "server-side federation"
+      # pattern: the remote does the read, the Toolbox-side in-process
+      # DuckDB sees a normal view via ATTACH.
+      - ./quack-server/product_price_history.parquet:/data/product_price_history.parquet:ro
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "9494"]
       interval: 2s
