@@ -291,6 +291,59 @@ tools:
     table: sales
 
   # ---------------------------------------------------------------
+  # Cube-backed tools — the agent surface of the same semantic model
+  # that backs Cube's BI surface (Cube REST/SQL API on :4000/:15432).
+  # The cube definitions live in cube/model/cubes/*.yml; the SQL
+  # below is the *hand-translated* equivalent of what Cube's compiler
+  # would emit for the equivalent measures × dimensions query against
+  # the same warehouse rows. See the demo README's "Semantic-layer
+  # integration with Cube" section for why the sync is manual today
+  # (DuckDB's postgres_scanner cannot speak Cube's SQL API at runtime).
+  #
+  # When the cube YAML changes, the corresponding tool SQL below must
+  # be updated by hand or via a future code-gen step that reads the
+  # cube manifest and emits these entries.
+  # ---------------------------------------------------------------
+
+  cube_sales_revenue_by_customer:
+    type: duckdb-sql
+    source: sales-quack
+    description: >-
+      Total revenue and order count per customer, sorted descending by
+      revenue. Backed by the `sales` cube in cube/model/cubes/sales.yml
+      — measures sales.revenue (SUM amount), sales.order_count (COUNT),
+      dimension sales.customer. The same answer Cube's REST/SQL API
+      returns for {measures:[sales.revenue,sales.order_count], dimensions:[sales.customer]}.
+    parameters: []
+    statement: |
+      SELECT
+        customer        AS "sales.customer",
+        SUM(amount)     AS "sales.revenue",
+        COUNT(*)        AS "sales.order_count"
+      FROM remote.sales
+      GROUP BY customer
+      ORDER BY "sales.revenue" DESC
+
+  cube_orders_top_products:
+    type: duckdb-sql
+    source: sales-quack
+    description: >-
+      Top products by total quantity shipped, with the count of
+      distinct customers per product. Backed by the `orders` cube in
+      cube/model/cubes/orders.yml — measures orders.total_qty,
+      orders.distinct_customers, dimension orders.product. Mirrors
+      Cube's compiled SQL for {measures:[orders.total_qty,orders.distinct_customers], dimensions:[orders.product]}.
+    parameters: []
+    statement: |
+      SELECT
+        product                          AS "orders.product",
+        SUM(qty)                         AS "orders.total_qty",
+        COUNT(DISTINCT customer)         AS "orders.distinct_customers"
+      FROM remote.orders
+      GROUP BY product
+      ORDER BY "orders.total_qty" DESC
+
+  # ---------------------------------------------------------------
   # Development tool — accepts an agent-supplied SQL string. Gated
   # behind `enabled: true` and not part of any production toolset.
   # Toolbox refuses to start if `enabled` is missing or false; with
@@ -346,3 +399,13 @@ toolsets:
   # servers and executes the JOIN locally after rows stream from each.
   cross_catalog:
     - product_orders_overview
+
+  # Cube-backed toolset: agent-side tools whose SQL is the
+  # hand-translated equivalent of the cube measures + dimensions
+  # defined in cube/model/cubes/*.yml. The same cube definitions back
+  # Cube's REST/SQL API for BI tools — one semantic model, two
+  # surfaces. (Sync is manual today because DuckDB's postgres_scanner
+  # cannot speak Cube's SQL API; see README.)
+  analytics_cube_backed:
+    - cube_sales_revenue_by_customer
+    - cube_orders_top_products

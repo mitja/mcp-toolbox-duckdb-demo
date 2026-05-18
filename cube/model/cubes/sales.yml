@@ -1,0 +1,54 @@
+# Sales cube — the BI-side semantic definition of the sales table.
+# The same definitions back Superset/Tableau/etc. via Cube's REST + SQL
+# APIs and (via server-side federation through quack-server) the
+# duckdb-quack Toolbox tools that target the agent surface. One model,
+# two surfaces — see the demo README "Semantic-layer integration with
+# Cube" section for the architecture story.
+
+cubes:
+  - name: sales
+    sql_table: main.sales
+    description: |
+      Sales orders — one row per invoice. Revenue is the booked amount
+      regardless of payment status. Use this cube for any agent or BI
+      question about top customers, revenue by period, ILIKE-style
+      customer-name searches.
+
+    measures:
+      - name: revenue
+        sql: amount
+        type: sum
+        format: currency
+        description: Total booked revenue across all sales orders.
+
+      - name: order_count
+        type: count
+        description: Number of sales orders.
+
+      - name: avg_order_value
+        sql: amount
+        type: avg
+        format: currency
+        description: Mean revenue per sales order.
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+        public: false
+
+      - name: customer
+        sql: customer
+        type: string
+        description: Customer legal name (e.g. "Alice GmbH").
+
+      - name: order_date
+        sql: order_date
+        type: time
+        description: Date the sale was booked.
+
+    segments:
+      - name: gmbh_customers
+        sql: "{CUBE}.customer ILIKE '%gmbh%'"
+        description: Subset of sales where the customer's name contains "gmbh".

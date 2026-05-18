@@ -252,3 +252,85 @@ services:
     depends_on:
       - toolbox
     profiles: ["inspect"]
+
+  # ---------------------------------------------------------------
+  # Cube — open-source semantic layer (Cube Core, Apache 2.0).
+  #
+  # The conceptual story: in real deployments BI tools (Superset,
+  # Tableau, ...) hit Cube for measures + dimensions, and the same
+  # semantic model also backs the agent surface — one model, two
+  # surfaces. To make that concrete here, Cube runs as a sidecar
+  # over a small DuckDB seeded from the same seed.sql used by the
+  # primary quack-server, defines two cubes (sales, orders) over the
+  # warehouse tables, exposes a Postgres-protocol SQL API on :15432,
+  # and the primary Quack server ATTACHes Cube's SQL API via the
+  # duckdb postgres extension. Cube-derived views in main are then
+  # visible to the Toolbox-side ATTACH like any other table — no
+  # adapter changes (the "server-side federation" pattern from
+  # NOTES.md applied to a semantic layer instead of a raw backend).
+  # ---------------------------------------------------------------
+
+  # cube-seed: one-shot init container. Reuses the quack-server
+  # image (which already has the duckdb CLI installed) to create a
+  # DuckDB file populated from the same seed.sql the primary
+  # quack-server uses. Cube reads this file via its DuckDB driver.
+  # Compose waits for service_completed_successfully before starting
+  # Cube, so the file is always present when Cube boots.
+  cube-seed:
+    build: ./quack-server
+    container_name: cube-seed
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        if [ -f /cube-data/sales.duckdb ]; then
+          echo "cube-seed: /cube-data/sales.duckdb already exists, skipping"
+          exit 0
+        fi
+        echo "cube-seed: creating /cube-data/sales.duckdb from /seed.sql"
+        duckdb /cube-data/sales.duckdb < /seed.sql
+        echo "cube-seed: done"
+    volumes:
+      - cube-data:/cube-data
+      - ./quack-server/seed.sql:/seed.sql:ro
+
+  cube:
+    image: cubejs/cube:v1.3
+    container_name: cube
+    environment:
+      CUBEJS_DEV_MODE: "true"
+      CUBEJS_SCHEMA_PATH: model
+      CUBEJS_DB_TYPE: duckdb
+      CUBEJS_DB_DUCKDB_DATABASE_PATH: /cube-data/sales.duckdb
+      # SQL API config — Postgres protocol on :15432. The primary
+      # quack-server ATTACHes to this endpoint.
+      CUBEJS_PG_SQL_PORT: "15432"
+      CUBEJS_SQL_USER: cube
+      CUBEJS_SQL_PASSWORD: cube
+      # Stable, non-secret JWT secret — fine for a localhost demo.
+      # Override to a real secret if exposing Cube beyond loopback.
+      CUBEJS_API_SECRET: demo-not-a-secret
+    volumes:
+      # Not :ro — Cube Store writes its rocksdb metastore under
+      # /cube/conf/.cubestore. The .cubestore directory is in
+      # .gitignore on the demo repo.
+      - ./cube:/cube/conf
+      # Not :ro either — Cube's DuckDB driver opens the file in
+      # read/write mode (even for read queries). Cube-seed populates
+      # it once at startup; nothing else writes to it after that.
+      - cube-data:/cube-data
+    ports:
+      - "4000:4000"   # REST + GraphQL + Cube Playground
+      - "15432:15432" # SQL API (Postgres protocol)
+    depends_on:
+      cube-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      # Cube exposes a readyz endpoint on the REST port.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/readyz | grep -q HEALTH"]
+      interval: 3s
+      timeout: 2s
+      retries: 40
+
+volumes:
+  cube-data:

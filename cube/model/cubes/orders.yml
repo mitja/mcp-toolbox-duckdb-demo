@@ -1,0 +1,54 @@
+# Orders cube — the product-quantity side of the sales activity.
+# Distinct from the `sales` cube (which carries dollars per invoice);
+# both live next to each other in the same warehouse and join on
+# (customer, order_date) when an agent asks something that needs both.
+
+cubes:
+  - name: orders
+    sql_table: main.orders
+    description: |
+      Product line-items per order — one row per product fulfilled.
+      Use this cube for questions about top products, units shipped,
+      or per-customer product mix.
+
+    joins:
+      - name: sales
+        relationship: many_to_one
+        sql: "{CUBE}.customer = {sales}.customer AND {CUBE}.order_date = {sales}.order_date"
+
+    measures:
+      - name: total_qty
+        sql: qty
+        type: sum
+        description: Total units shipped across all line-items.
+
+      - name: line_count
+        type: count
+        description: Number of order line-items.
+
+      - name: distinct_customers
+        sql: customer
+        type: count_distinct
+        description: Number of distinct customers who placed orders.
+
+    dimensions:
+      - name: id
+        sql: id
+        type: number
+        primary_key: true
+        public: false
+
+      - name: customer
+        sql: customer
+        type: string
+        description: Customer legal name.
+
+      - name: product
+        sql: product
+        type: string
+        description: SKU name (e.g. "Widget", "Sprocket", "Gizmo").
+
+      - name: order_date
+        sql: order_date
+        type: time
+        description: Date the order was placed.

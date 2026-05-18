@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 .venv/
 *.egg-info/
+
+# Cube Store rocksdb metastore — written by the cube container under
+# ./cube/.cubestore at runtime.
+cube/.cubestore/

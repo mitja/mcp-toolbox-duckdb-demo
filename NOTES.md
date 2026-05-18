@@ -875,3 +875,104 @@ lower priority): *"Optional buffered ATTACH mode to work around
 'Multiple streaming scans not currently supported' in client
 queries"* — only if the DuckDB core fix is not on the near-term
 roadmap.
+
+## DuckDB postgres_scanner ↔ Cube SQL API: ATTACH succeeds, queries fail
+
+**Status:** Compatibility gap observed 2026-05-18 against Cube Core
+v1.3 and DuckDB v1.5.2's `postgres` extension. Not blocking — the
+demo falls back to the manual-sync pattern between Cube YAML and
+Toolbox SQL — but worth writing up because the "ATTACH Cube as a
+Postgres source" route is the natural one a reader would try first.
+
+**Goal:** Run Cube as a sidecar (Postgres-protocol SQL API on
+`:15432`), and have the Toolbox-side in-process DuckDB (via
+`server-side federation` through quack-server) ATTACH Cube using
+the `postgres` extension. Cube's measures + dimensions would then
+appear as views in `main`, visible to the Toolbox-side ATTACH
+transparently. One semantic model, two surfaces, full runtime
+federation, zero adapter changes.
+
+**What works:**
+
+```sql
+INSTALL postgres FROM core;
+LOAD postgres;
+ATTACH 'host=cube port=15432 user=cube password=cube dbname=db'
+       AS cube_api (TYPE postgres);
+-- ✓ ATTACH succeeds; the credential handshake is fine.
+```
+
+**What fails — pattern 1: catalog probes.** Any DDL-introspecting
+query (`SHOW ALL TABLES`, `SELECT … FROM cube_api.information_schema.tables`,
+even side-effects of basic `SELECT` planning) triggers `pg_catalog`
+joins that Cube does not implement:
+
+```
+ERROR:  Initial planning error: Error during planning:
+Table or CTE with name 'pg_indexes' not found
+QUERY: SELECT pg_namespace.oid, tablename, indexname
+       FROM pg_indexes JOIN pg_namespace ON (schemaname = nspname)
+       ORDER BY pg_namespace.oid
+```
+
+`postgres_scanner` walks `pg_indexes`, `pg_class`, `pg_attribute`,
+`pg_type` etc. to build its local representation of the remote
+schema. Cube's pg-protocol implementation exposes `information_schema`
+but not the broader `pg_catalog` surface, and not the specific
+compound joins the scanner uses.
+
+**What fails — pattern 2: COPY-binary reads.** Even when a query
+references no catalogs, DuckDB's `postgres_query()` wraps reads in
+the binary COPY protocol for efficient row transport:
+
+```
+COPY (SELECT "customer", "revenue"
+      FROM (SELECT customer, MEASURE(revenue) AS revenue
+            FROM sales GROUP BY customer ORDER BY revenue DESC LIMIT 5)
+           AS __unnamed_subquery) TO STDOUT (FORMAT "binary");
+ERROR:  Unable to parse: ParserError("Expected identifier, found: (")
+```
+
+Cube's SQL parser doesn't accept `COPY (subquery) TO STDOUT`; it's
+a syntax that's specific to real Postgres and not part of Cube's
+"SQL-on-the-semantic-layer" feature set.
+
+**Where the fix could land:**
+
+1. **Cube widens its pg-protocol surface.** Implement enough of
+   `pg_catalog` (specifically the tables `postgres_scanner` probes:
+   `pg_indexes`, `pg_class`, `pg_attribute`, `pg_type`,
+   `pg_namespace`, `pg_constraint`) and accept `COPY (subquery) TO
+   STDOUT (FORMAT binary)`. This is a real amount of work and
+   arguably out of scope for what Cube's SQL API positions itself
+   as (a *query* endpoint, not a *Postgres-compatibility* endpoint).
+   Suggested issue title (file in `cube-js/cube`):
+   *"Support DuckDB postgres_scanner: pg_indexes/pg_class probes +
+   COPY (subquery) TO STDOUT (FORMAT binary)"*.
+
+2. **DuckDB `postgres` extension grows a "minimum-Postgres" mode.**
+   Skip catalog probing, accept the user's explicit `CREATE TABLE`
+   shape, and switch result transport to plain SELECT instead of
+   COPY-binary when a flag is set. Suggested issue title (file in
+   `duckdb/duckdb`): *"postgres extension: support
+   pg-protocol-only backends (Cube, CockroachDB SQL API, etc.) via
+   a minimal-introspection mode"*. Lower probability of acceptance
+   — `postgres_scanner` is explicitly a Postgres extension, not a
+   generic pg-protocol client.
+
+3. **A new MCP Toolbox source type that speaks Cube's REST/SQL API
+   natively** — e.g., `cube-source` with a `cube-query` tool type
+   that consumes `{measures, dimensions, filters, ...}` JSON and
+   delegates to Cube's REST API. This bypasses `postgres_scanner`
+   entirely, gives the agent a Cube-shaped tool surface, and avoids
+   the impedance mismatch. Tractable but a meaningful piece of new
+   adapter code.
+
+**What the demo does instead.** The Cube sidecar is wired in for
+the BI surface (REST API on `:4000`, SQL API on `:15432`), but the
+Toolbox tools query the underlying DuckDB through `sales-quack`
+and hand-mirror Cube's measure SQL (`SUM(amount) AS
+"sales.revenue"` etc.). The cube YAML is the *authoring* authority;
+the sync is by review. A code-gen step that reads the cube manifest
+and emits the corresponding Toolbox tool entries would tighten the
+loop and is the natural next step.

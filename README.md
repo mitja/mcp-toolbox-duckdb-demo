@@ -13,9 +13,11 @@ What's running, top to bottom:
 
 - **Host clients** — Claude Code via MCP at `localhost:5555/mcp`,
   `curl`/notebook against `/api/tool/<name>/invoke`, and your browser
-  for three web UIs: **MCP Inspector** (`:6274`), the built-in
+  for four web UIs: **MCP Inspector** (`:6274`), the built-in
   **Toolbox UI** (`:5555/ui` — tool browser + invoker shipped with
-  Toolbox), and **Jaeger** (`:16686`).
+  Toolbox), **Cube Playground** (`:4000` — the semantic-layer
+  authoring + query UI; same model that backs the `cube_*` tools),
+  and **Jaeger** (`:16686`).
 - **In-network clients (profile-gated)** — `trace-client`
   (`--profile trace`, single-call OTel demo), `trace-load`
   (`--profile load`, concurrent multi-source burst with PASS/FAIL
@@ -43,6 +45,14 @@ What's running, top to bottom:
   refused here.
 - **`otel-collector` + `jaeger`** — always-on, receive spans/metrics
   from anything OTel-instrumented (Toolbox plus any active client).
+- **`cube` + `cube-seed`** — Cube Core (Apache 2.0) running over a
+  small DuckDB seeded from the same `seed.sql` the primary
+  quack-server uses. Two cubes (`sales`, `orders`) in
+  [`cube/model/cubes/`](cube/model/cubes/) define measures +
+  dimensions. The REST/SQL APIs serve BI tools; the same cubes are
+  the authoring authority for the `cube_*` Toolbox tools in the
+  `analytics_cube_backed` toolset. See "Semantic-layer integration
+  with Cube" below for the architecture story.
 
 ## Prerequisites
 
@@ -695,6 +705,94 @@ change the schema:
 uv run --no-project --with duckdb python3 quack-server/gen_price_history.py
 ```
 
+## Semantic-layer integration with Cube
+
+In a real deployment, BI tools (Superset, Tableau, …) and agents
+typically grow **two separate semantic layers** over the same
+warehouse — duplicated metric definitions, duplicated joins,
+duplicated drift. This demo wires [Cube Core](https://cube.dev)
+(Apache 2.0) as a sidecar and shows the **one-model-two-surfaces**
+pattern: a single set of cubes drives both Cube's BI APIs *and* a
+corresponding family of MCP Toolbox tools.
+
+Cube runs on `localhost:4000` (REST + GraphQL + Cube Playground) and
+`localhost:15432` (Postgres-protocol SQL API). The cube definitions
+live in [`cube/model/cubes/`](cube/model/cubes/) — two cubes,
+`sales` and `orders`, with measures (`revenue`, `total_qty`,
+`distinct_customers`, …), dimensions (`customer`, `product`,
+`order_date`), and a join. Open `http://localhost:4000` to land in
+the Cube Playground and explore them visually.
+
+**The same measures back two tools on the Toolbox side.** They live
+in the `analytics_cube_backed` toolset and return rows whose column
+names use Cube's `<cube>.<member>` shape — so the agent's response
+shape is the same shape a BI client would see:
+
+```bash
+# BI surface (what Superset/Tableau would hit):
+curl -s 'http://localhost:4000/cubejs-api/v1/load' \
+  --data-urlencode 'query={"measures":["sales.revenue","sales.order_count"],"dimensions":["sales.customer"],"order":[["sales.revenue","desc"]]}' \
+  | jq '.data[:3]'
+
+# Agent surface (what Claude Code / LangGraph hit through MCP Toolbox):
+curl -s -X POST http://localhost:5555/api/tool/cube_sales_revenue_by_customer/invoke \
+  -H 'Content-Type: application/json' -d '{}' \
+  | jq '.result | fromjson | .rows[:3]'
+```
+
+Both return the same rows from the same model:
+
+```json
+[
+  {"sales.customer": "Daniel SARL", "sales.revenue": "3850.00", "sales.order_count": 2},
+  {"sales.customer": "Alice GmbH",  "sales.revenue": "2661.65", "sales.order_count": 4},
+  {"sales.customer": "Bob Corp",    "sales.revenue": "2620.20", "sales.order_count": 3}
+]
+```
+
+The same pattern works for `cube_orders_top_products` (measures
+`orders.total_qty` + `orders.distinct_customers`, dimension
+`orders.product`).
+
+### Sync today: by hand; runtime federation: not yet
+
+Today the sync between Cube definitions and Toolbox SQL is **by
+discipline**. The cube YAML is the authoring authority; the
+corresponding tool's SQL hand-mirrors the cube's measure/dimension
+SQL fragments. A code-gen step that reads the cube manifest and
+emits Toolbox tool entries would be a small, future addition.
+
+**Runtime federation is what we'd actually want** — the in-process
+DuckDB in Toolbox `ATTACH`ing Cube's SQL API directly, so the
+Toolbox tool's SQL could just `SELECT * FROM cube_pg.sales` and let
+Cube compile measures. We tried that with DuckDB's `postgres_scanner`
+extension; it doesn't work today. The `ATTACH` succeeds, but
+`postgres_scanner` issues catalog probes (`pg_indexes`, `pg_class`
+compound joins) and wraps reads in `COPY … TO STDOUT (FORMAT
+binary)` — neither of which Cube's pg-protocol implementation
+supports. Until Cube widens its pg surface (or `postgres_scanner`
+gains a "minimum-Postgres" mode), the manual-sync pattern is the
+honest demo. See [`NOTES.md`](NOTES.md) for the compatibility
+writeup.
+
+### Where Cube fits in the wider story
+
+A few honest tradeoffs:
+
+- **Pro:** One semantic model. BI dashboards and agents query the
+  same measures by name; an audit of "what does `sales.revenue`
+  mean" has one answer in `cube/model/cubes/sales.yml`.
+- **Pro:** Cube already supports many warehouses (DuckDB, Postgres,
+  BigQuery, Snowflake, …); swapping the storage backend doesn't
+  change the agent contract.
+- **Con (today):** The manual SQL mirror needs to be kept in sync.
+  Cube can grow new measures faster than the Toolbox tools mirror
+  them. A code-gen step closes this gap; a runtime ATTACH closes it
+  fully.
+- **Con (architectural):** Cube adds a service to the deployment.
+  For very simple agent surfaces (a single curated SQL tool, no BI
+  consumer), it's overkill — write `duckdb-sql` tools directly.
+
 ## LangGraph agent demo
 
 ```bash
@@ -848,9 +946,9 @@ a backstop against bugs or future raw-SQL tool surfaces.
 
 ```
 .
-├── docker-compose.yaml         # always-on: quack-server, quack-server-2, toolbox, otel-collector, jaeger
+├── docker-compose.yaml         # always-on: quack-server, quack-server-2, toolbox, otel-collector, jaeger, cube, cube-seed
 │                               # profile-gated: trace-client, trace-load, langgraph, inspector
-├── tools.yaml                  # MCP Toolbox source + tool config (5 toolsets, 3 sources)
+├── tools.yaml                  # MCP Toolbox source + tool config (6 toolsets, 3 sources)
 ├── quack-server/
 │   ├── Dockerfile              # Debian + DuckDB CLI + Quack
 │   ├── entrypoint.sh           # envsubst init.sql.tmpl, then duckdb
@@ -876,6 +974,8 @@ a backstop against bugs or future raw-SQL tool surfaces.
 │   └── claude_config.example.json   # default /mcp (all tools); swap path to scope
 ├── pi/
 │   └── pi_config.example.json       # four servers, each scoped to one toolset
+├── cube/                             # Cube Core semantic layer
+│   └── model/cubes/                  # sales.yml + orders.yml (measures + dimensions)
 ├── docs/
 │   └── stack.svg               # architecture diagram (rendered at the top of this README)
 ├── .env.example
