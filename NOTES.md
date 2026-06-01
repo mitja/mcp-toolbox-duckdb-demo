@@ -1,7 +1,18 @@
 # Notes
 
-Things discovered while building this demo that are worth flagging
-upstream (or at least worth knowing if you hit them yourself).
+## improvements
+
+- Data quality / contracts: dbt's tests: cover ~80% for free. Add Soda or
+  Great Expectations if you need separate SLAs + alerting.
+- Catalog / lineage: dbt docs gives you auto-lineage + column descriptions
+  for free. Standalone (OpenMetadata, DataHub) only if you outgrow that.
+- Scheduled reports / alerting: Superset has both built-in (Celery-backed),
+  but in a lean stack you might prefer a tiny notify service that runs Cube
+  queries on a cron and posts to Slack/email.
+- Notebooks: you have a walkthrough notebook already; for real exploratory
+  work most teams want JupyterLab or marimo.
+- Reverse ETL: usually skip unless you actually need to push enriched data
+  back to operational systems.
 
 ## Quack URI parser confuses hostname == scheme keyword
 
