@@ -3,7 +3,11 @@
 # them to stdout via the debug exporter so `docker compose logs
 # otel-collector` shows the spans and metric points the toolbox emits.
 #
-# To send to a real backend (Tempo, Jaeger, Grafana Cloud, Honeycomb,
+# Traces additionally fan out to Jaeger (UI on :16686); metrics fan out
+# to a Prometheus scrape endpoint on :8889, consumed by the
+# prometheus + grafana services in the `obs` Compose profile.
+#
+# To send to a different backend (Tempo, Grafana Cloud, Honeycomb,
 # Datadog, …), add it under `exporters:` and reference it in the pipeline
 # `exporters:` list. The debug exporter can stay alongside for local
 # tail-the-logs inspection.
@@ -34,7 +38,22 @@ exporters:
     tls:
       insecure: true
 
+  # Expose received metrics on a Prometheus scrape endpoint. The
+  # prometheus service (Compose profile `obs`) scrapes this; without
+  # that profile the endpoint is simply never scraped — harmless.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+extensions:
+  # Liveness/readiness endpoint on :13133 (GET /). The collector image
+  # is built FROM scratch (no shell), so Docker can't exec a healthcheck
+  # inside it — but the CI smoke test and humans can curl this from the
+  # host (the port is published in docker-compose.yaml).
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 service:
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
@@ -43,4 +62,4 @@ service:
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [debug, prometheus]

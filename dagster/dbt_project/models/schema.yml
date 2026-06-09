@@ -1,0 +1,46 @@
+# Schema tests for the dbt models. `dbt build` (run by both the
+# container-entrypoint bootstrap and Dagster's scheduled
+# materializations) executes these after building each model; a
+# failure fails the build, which in turn withholds the
+# /data/.bootstrap-ok sentinel that quack-server-3's healthcheck
+# requires. Cheap data-quality gate — extend per the "improvements"
+# list in NOTES.md (Soda / Great Expectations) if you need SLAs.
+
+version: 2
+
+models:
+  - name: stg_events
+    description: Cleaned/typed staging view over the raw dlt events.
+    columns:
+      - name: event_id
+        data_tests:
+          - not_null
+          - unique
+      - name: event_ts
+        data_tests:
+          - not_null
+      - name: event_type
+        data_tests:
+          - accepted_values:
+              values: ["page_view", "click", "scroll"]
+      - name: country
+        data_tests:
+          - not_null
+
+  - name: daily_traffic
+    description: Per-day, per-country traffic rollup (Parquet mart).
+    columns:
+      - name: event_date
+        data_tests:
+          - not_null
+      - name: country
+        data_tests:
+          - not_null
+
+  - name: top_pages_30d
+    description: Trailing-30-day page leaderboard (Parquet mart).
+    columns:
+      - name: page
+        data_tests:
+          - not_null
+          - unique

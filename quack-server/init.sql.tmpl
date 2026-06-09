@@ -1,7 +1,10 @@
 -- Quack server init script. Rendered from this template at container start
 -- so QUACK_TOKEN can be injected from the environment.
+--
+-- The Quack extension is INSTALLed at image-build time (see Dockerfile)
+-- so container start needs no network and the extension version is
+-- frozen with the image; only LOAD remains here.
 
-INSTALL quack FROM core_nightly;
 LOAD quack;
 
 -- Seed sample analytics data.

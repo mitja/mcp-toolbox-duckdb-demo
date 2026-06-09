@@ -1,43 +1,66 @@
 # Demo stack for the MCP Toolbox DuckDB / Quack adapter.
 #
-# Services:
+# Core services (plain `docker compose up`):
 #   - quack-server: a Debian image running the DuckDB CLI with the Quack
 #               extension loaded, serving a small analytics dataset over
 #               the Quack remote protocol on port 9494.
-#   - toolbox:  the MCP Toolbox server built from the sibling
-#               mcp-toolbox-duckdb fork (the feat/duckdb-quack branch).
-#               Exposes the curated duckdb-sql tools at HTTP :5000.
+#   - quack-server-2: same image, inventory seed — exercises multi-source
+#               routing in Toolbox.
+#   - toolbox:  the MCP Toolbox server built from the mcp-toolbox-duckdb
+#               fork (the feat/duckdb-quack branch). Exposes the curated
+#               duckdb-sql tools at HTTP :5000 (host :5555). The fork's
+#               checkout location defaults to ../mcp-toolbox-duckdb;
+#               override with TOOLBOX_SRC in .env or the environment.
 #   - otel-collector: an OpenTelemetry collector that receives traces and
-#               metrics from the toolbox and a trace-client, batches them,
-#               and exports them to Jaeger (and stdout for easy local debugging).
+#               metrics from the toolbox and clients, batches them, and
+#               exports traces to Jaeger, metrics to a Prometheus scrape
+#               endpoint, and everything to stdout for local debugging.
 #   - jaeger: the Jaeger all-in-one image, which receives OTLP from the
 #               collector and serves the Jaeger UI on http://localhost:16686.
 #
 # Optional services, gated by Docker Compose profiles:
-#   - inspector: the MCP Inspector, a web UI for exploring an MCP server's
-#               tools/resources/prompts and invoking them interactively.
-#   - trace-client: a tiny Go program that emits a test trace and makes one
-#               HTTP call to the toolbox. Useful for verifying that the
-#               OTLP instrumentation and Jaeger setup are working without
-#               needing to trigger the agent-based demo below.
-#   - langgraph: a tiny ReAct agent that loads the analytics_readonly
-#                toolset and asks Claude to answer a sample question.
+#   - inspect:  inspector — the MCP Inspector web UI.
+#   - trace:    trace-client — emits one test trace through the stack.
+#   - load:     trace-load — concurrent multi-source smoke test (also used
+#               by the CI workflow).
+#   - agent:    langgraph — a tiny ReAct agent that loads the
+#               analytics_readonly toolset and asks Claude a question.
+#   - bi:       cube-seed + cube + superset — the semantic-layer / BI
+#               track. Heavy (~2 GB RAM); start with
+#               `docker compose --profile bi up -d`.
+#   - dataeng:  dagster + quack-server-3 — the dlt + dbt + Dagster
+#               data-engineering track. Heavy; start with
+#               `docker compose --profile dataeng up -d`. The
+#               analytics-engineered Toolbox source has
+#               attach_on_startup: false, so the core stack runs fine
+#               without this profile — the engineered tools just error
+#               until it's up.
+#   - obs:      prometheus + grafana over the collector's metrics
+#               endpoint, http://localhost:9090 / http://localhost:3001.
 #
-# Required env vars (see .env.example): QUACK_TOKEN, ANTHROPIC_API_KEY.
+# Required env vars (see .env.example): QUACK_TOKEN_SALES,
+# QUACK_TOKEN_INVENTORY, QUACK_TOKEN_ENGINEERED — one token per Quack
+# server, mirroring per-source credential scoping in tools.yaml — and
+# ANTHROPIC_API_KEY (agent profile only).
 #
 # An OTel collector sits beside the toolbox; the toolbox is configured
-# with --telemetry-otlp http://otel-collector:4318 so all of its spans
+# with --telemetry-otlp otel-collector:4318 so all of its spans
 # and metrics land there. The collector's debug exporter renders
 # everything to stdout, so `docker compose logs otel-collector` is the
-# observability view for the demo (replace the exporter with Tempo,
-# Jaeger, or a SaaS backend for anything serious).
+# quick observability view for the demo.
+#
+# Container names: intentionally NOT pinned via container_name. Compose
+# derives <project>-<service>-N from the `name:` below, so two checkouts
+# can run side by side and `docker compose exec <service> …` always
+# works. Use service names in commands, not raw container names.
+
+name: mcp-toolbox-duckdb-demo
 
 services:
   quack-server:
     build: ./quack-server
-    container_name: duckdb-quack
     environment:
-      QUACK_TOKEN: ${QUACK_TOKEN:?set QUACK_TOKEN in .env}
+      QUACK_TOKEN: ${QUACK_TOKEN_SALES:?set QUACK_TOKEN_SALES in .env}
       QUACK_PORT: "9494"
     ports:
       - "9494:9494"
@@ -46,6 +69,10 @@ services:
       interval: 2s
       timeout: 1s
       retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   # Second Quack server, same image, different seed mounted over the
   # baked-in /quack/seed.sql. Wired as the `inventory-quack` source in
@@ -57,9 +84,8 @@ services:
   # which uses the docker-network hostname `quack-server-2`.
   quack-server-2:
     build: ./quack-server
-    container_name: duckdb-quack-2
     environment:
-      QUACK_TOKEN: ${QUACK_TOKEN:?set QUACK_TOKEN in .env}
+      QUACK_TOKEN: ${QUACK_TOKEN_INVENTORY:?set QUACK_TOKEN_INVENTORY in .env}
       QUACK_PORT: "9494"
     volumes:
       - ./quack-server/seed-inventory.sql:/quack/seed.sql:ro
@@ -73,20 +99,29 @@ services:
       interval: 2s
       timeout: 1s
       retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   toolbox:
     # Override the upstream Dockerfile (which cross-compiles via Zig and
     # cannot resolve C++ stdlib symbols that the DuckDB-go static library
-    # requires) with a native CGO build. golang:1 already ships gcc; we
+    # requires) with a native CGO build. golang already ships gcc; we
     # add g++ for libstdc++. The runtime stage matches upstream
     # (distroless/cc supplies libc + libstdc++).
+    #
+    # TOOLBOX_SRC points at a checkout of
+    # https://github.com/mitja/mcp-toolbox-duckdb (branch
+    # feat/duckdb-quack); defaults to a sibling directory:
+    #   git clone -b feat/duckdb-quack https://github.com/mitja/mcp-toolbox-duckdb ../mcp-toolbox-duckdb
     build:
-      context: ../mcp-toolbox-duckdb
+      context: ${TOOLBOX_SRC:-../mcp-toolbox-duckdb}
       dockerfile_inline: |
-        # Pin builder to bookworm so the linked glibc matches the
-        # distroless/cc-debian12 runtime (golang:1's default debian
-        # version drifts forward independently).
-        FROM golang:1-bookworm AS build
+        # Builder pinned to bookworm so the linked glibc matches the
+        # distroless/cc-debian12 runtime (golang's default debian
+        # version drifts forward independently — it's trixie now).
+        FROM golang:1.26.4-bookworm AS build
         RUN apt-get update \
          && apt-get install -y --no-install-recommends g++ \
          && rm -rf /var/lib/apt/lists/*
@@ -95,12 +130,38 @@ services:
         ENV CGO_ENABLED=1
         RUN go build -o /toolbox .
 
+        # Tiny static healthcheck binary. distroless/cc has no shell, so
+        # Docker's HEALTHCHECK needs a standalone executable. GET / on
+        # the toolbox returns 200 once config + sources are loaded
+        # (sources ATTACH eagerly during startup), so a 200 here means
+        # "ready", not just "listening".
+        FROM golang:1.26.4-bookworm AS healthcheck
+        WORKDIR /hc
+        COPY <<'EOF' main.go
+        package main
+
+        import (
+            "net/http"
+            "os"
+            "time"
+        )
+
+        func main() {
+            client := &http.Client{Timeout: 2 * time.Second}
+            resp, err := client.Get("http://127.0.0.1:5000/")
+            if err != nil || resp.StatusCode != http.StatusOK {
+                os.Exit(1)
+            }
+        }
+        EOF
+        RUN go mod init healthcheck && CGO_ENABLED=0 go build -o /healthcheck .
+
         FROM gcr.io/distroless/cc-debian12:nonroot
         WORKDIR /app
         COPY --from=build --chown=nonroot /toolbox /toolbox
+        COPY --from=healthcheck --chown=nonroot /healthcheck /healthcheck
         USER nonroot
         ENTRYPOINT ["/toolbox"]
-    container_name: toolbox-duckdb
     command:
       - "--config"
       - "/cfg/tools.yaml"
@@ -121,7 +182,12 @@ services:
       - "--telemetry-service-name"
       - "duckdb-quack-demo"
     environment:
-      QUACK_TOKEN: ${QUACK_TOKEN:?set QUACK_TOKEN in .env}
+      # Per-server tokens, expanded by tools.yaml's ${...} references.
+      # All three must be set even when the dataeng profile is down —
+      # Toolbox expands env vars at config load, before any connection.
+      QUACK_TOKEN_SALES: ${QUACK_TOKEN_SALES:?set QUACK_TOKEN_SALES in .env}
+      QUACK_TOKEN_INVENTORY: ${QUACK_TOKEN_INVENTORY:?set QUACK_TOKEN_INVENTORY in .env}
+      QUACK_TOKEN_ENGINEERED: ${QUACK_TOKEN_ENGINEERED:?set QUACK_TOKEN_ENGINEERED in .env}
       # OTLP exporter knobs:
       #   - INSECURE=true:  the collector listens on plain HTTP inside
       #                     the docker network (no TLS terminator).
@@ -136,6 +202,18 @@ services:
       # Host 5555 → container 5000. macOS binds 5000 to AirPlay by default,
       # which intercepts the published port; pick a free host port.
       - "5555:5000"
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      # Startup runs INSTALL/LOAD of the Quack extension plus the eager
+      # ATTACHes to both core Quack servers; allow some slack.
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     depends_on:
       quack-server:
         condition: service_healthy
@@ -145,14 +223,26 @@ services:
         condition: service_started
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.115.1
-    container_name: otel-collector
-    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    # Core (not -contrib) distribution: everything this config uses
+    # (otlp receiver, batch, debug/otlphttp/prometheus exporters,
+    # health_check extension) ships in core, and the image is smaller.
+    image: otel/opentelemetry-collector:0.153.0
+    command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
-      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
     ports:
       - "4317:4317" # OTLP gRPC
       - "4318:4318" # OTLP HTTP
+      # health_check extension. The collector image is FROM scratch (no
+      # shell), so Docker can't run an in-container healthcheck — but
+      # the CI smoke test and humans can `curl localhost:13133` from
+      # the host. In-network OTLP clients retry, so startup ordering
+      # against the collector is soft anyway.
+      - "13133:13133"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     depends_on:
       - jaeger
 
@@ -160,7 +250,6 @@ services:
   # web UI. Open http://localhost:16686 to inspect traces.
   jaeger:
     image: jaegertracing/all-in-one:1.62.0
-    container_name: jaeger
     environment:
       # Jaeger v1.35+ ships native OTLP receivers; this env enables them.
       COLLECTOR_OTLP_ENABLED: "true"
@@ -169,6 +258,48 @@ services:
       # 4317/4318 are exposed inside the docker network only; the
       # collector talks to Jaeger over OTLP. Hostside OTLP stays
       # mapped to the otel-collector service above.
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # ---------------------------------------------------------------
+  # Observability extras — profile `obs`. Prometheus scrapes the
+  # collector's :8889 metrics endpoint; Grafana (admin/admin) comes
+  # provisioned with Prometheus as its default datasource.
+  # ---------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    depends_on:
+      - otel-collector
+    profiles: ["obs"]
+
+  grafana:
+    image: grafana/grafana:12.4.4
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      # Host 3001 — Dagster owns 3000.
+      - "3001:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    depends_on:
+      - prometheus
+    profiles: ["obs"]
 
   # Tiny standalone client that emits an OTel trace + makes one HTTP
   # call to Toolbox. Demonstrates that the LangGraph -> MCP -> SQL
@@ -176,14 +307,14 @@ services:
   # so it does not start with `docker compose up`.
   trace-client:
     build: ./trace-client
-    container_name: trace-client
     environment:
       TOOLBOX_URL: http://toolbox:5000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_SERVICE_NAME: trace-client
     depends_on:
-      - toolbox
+      toolbox:
+        condition: service_healthy
     profiles: ["trace"]
 
   # Concurrent multi-source test. Reuses the trace-client image but
@@ -192,13 +323,13 @@ services:
   # source DBs (sales-quack + inventory-quack), then polls Jaeger
   # to verify every emitted trace landed AND each trace's span tree
   # is properly stitched. Exits non-zero on any failure, so it
-  # doubles as a CI-style smoke test under concurrency.
+  # doubles as the CI smoke test under concurrency (see
+  # .github/workflows/smoke.yml).
   #
   # (Module is named load_test.py, not concurrent.py, because the
   # latter would shadow the stdlib `concurrent.futures` package.)
   trace-load:
     build: ./trace-client
-    container_name: trace-load
     entrypoint: ["python", "load_test.py"]
     environment:
       TOOLBOX_URL: http://toolbox:5000
@@ -208,13 +339,14 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_SERVICE_NAME: trace-load
     depends_on:
-      - toolbox
-      - jaeger
+      toolbox:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
     profiles: ["load"]
 
   langgraph:
     build: ./langgraph
-    container_name: langgraph-demo
     environment:
       TOOLBOX_URL: http://toolbox:5000
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
@@ -226,7 +358,8 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_SERVICE_NAME: langgraph-demo
     depends_on:
-      - toolbox
+      toolbox:
+        condition: service_healthy
     profiles: ["agent"]
 
   # MCP Inspector: a web UI for exploring an MCP server's
@@ -241,7 +374,6 @@ services:
   # token) before binding to a non-loopback address.
   inspector:
     image: ghcr.io/modelcontextprotocol/inspector:0.21.2-hotfix-3
-    container_name: mcp-inspector
     environment:
       HOST: "0.0.0.0"
       DANGEROUSLY_OMIT_AUTH: "true"
@@ -249,12 +381,18 @@ services:
     ports:
       - "6274:6274" # UI
       - "6277:6277" # proxy (UI -> proxy -> MCP server)
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     depends_on:
-      - toolbox
+      toolbox:
+        condition: service_healthy
     profiles: ["inspect"]
 
   # ---------------------------------------------------------------
   # Cube — open-source semantic layer (Cube Core, Apache 2.0).
+  # Profile `bi` together with cube-seed and superset.
   #
   # The conceptual story: in real deployments BI tools (Superset,
   # Tableau, ...) hit Cube for measures + dimensions, and the same
@@ -278,7 +416,6 @@ services:
   # Cube, so the file is always present when Cube boots.
   cube-seed:
     build: ./quack-server
-    container_name: cube-seed
     entrypoint: ["sh", "-c"]
     command:
       - |
@@ -293,10 +430,11 @@ services:
     volumes:
       - cube-data:/cube-data
       - ./quack-server/seed.sql:/seed.sql:ro
+    profiles: ["bi"]
 
   cube:
-    image: cubejs/cube:v1.3
-    container_name: cube
+    # Pinned to a v1.3 patch release (was v1.3, a moving minor tag).
+    image: cubejs/cube:v1.3.86
     environment:
       CUBEJS_DEV_MODE: "true"
       CUBEJS_SCHEMA_PATH: model
@@ -311,17 +449,23 @@ services:
       # Override to a real secret if exposing Cube beyond loopback.
       CUBEJS_API_SECRET: demo-not-a-secret
     volumes:
-      # Not :ro — Cube Store writes its rocksdb metastore under
-      # /cube/conf/.cubestore. The .cubestore directory is in
-      # .gitignore on the demo repo.
-      - ./cube:/cube/conf
-      # Not :ro either — Cube's DuckDB driver opens the file in
-      # read/write mode (even for read queries). Cube-seed populates
-      # it once at startup; nothing else writes to it after that.
+      # Model + config, read-only. Cube Store's rocksdb metastore
+      # (which Cube writes under conf/.cubestore) goes to a named
+      # volume mounted over that subpath, so the container never
+      # writes into the working tree.
+      - ./cube:/cube/conf:ro
+      - cube-store:/cube/conf/.cubestore
+      # Not :ro — Cube's DuckDB driver opens the file in read/write
+      # mode (even for read queries). Cube-seed populates it once at
+      # startup; nothing else writes to it after that.
       - cube-data:/cube-data
     ports:
       - "4000:4000"   # REST + GraphQL + Cube Playground
       - "15432:15432" # SQL API (Postgres protocol)
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     depends_on:
       cube-seed:
         condition: service_completed_successfully
@@ -342,6 +486,7 @@ services:
       interval: 3s
       timeout: 2s
       retries: 40
+    profiles: ["bi"]
 
   # ---------------------------------------------------------------
   # Superset — Apache Superset (Apache 2.0) wired to Cube's SQL API
@@ -360,7 +505,9 @@ services:
   #
   # All steps are idempotent so `docker compose restart superset`
   # is safe. Metastore lives in a Compose volume so dashboards
-  # persist across restarts.
+  # persist across restarts. Runs as the image's `superset` user;
+  # everything bootstrap writes lives under /app/superset_home (the
+  # volume), which the image ships superset-owned.
   # ---------------------------------------------------------------
   superset:
     # The upstream apache/superset image ships SQLAlchemy but no
@@ -375,13 +522,11 @@ services:
         USER root
         RUN pip install --no-cache-dir psycopg2-binary==2.9.9
         USER superset
-    container_name: superset
-    user: "root"  # bootstrap.sh writes to /app and chowns later if needed
     environment:
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-demo-not-a-secret-rotate-me-before-prod}
       SUPERSET_LOAD_EXAMPLES: "no"
-      SUPERSET_ADMIN_USERNAME: admin
-      SUPERSET_ADMIN_PASSWORD: admin
+      SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
       SUPERSET_ADMIN_EMAIL: admin@example.com
       # PYTHONPATH so superset_config.py is found.
       PYTHONPATH: /app/pythonpath
@@ -393,6 +538,10 @@ services:
     ports:
       - "8088:8088"
     entrypoint: ["/bin/bash", "/app/bootstrap.sh"]
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     depends_on:
       cube:
         condition: service_healthy
@@ -402,9 +551,11 @@ services:
       timeout: 3s
       retries: 60
       start_period: 60s
+    profiles: ["bi"]
 
   # ---------------------------------------------------------------
   # Data-engineering track: dlt + dbt-duckdb + Dagster.
+  # Profile `dataeng` together with quack-server-3.
   #
   # Demonstrates the full EL → T → semantic → consumption loop on a
   # synthetic web-events dataset (separate from the seed.sql data
@@ -412,14 +563,13 @@ services:
   # ingest + dbt transform as one asset graph and exposes a UI on
   # :3000.
   #
-  # The pipeline writes to /data/engineered.duckdb in a shared
-  # volume; quack-server-3 mounts the same volume read-only and
-  # serves the dbt-produced tables over Quack so the existing
-  # MCP Toolbox source plumbing reaches them.
+  # The pipeline writes Parquet snapshots into a shared volume;
+  # quack-server-3 mounts the same volume read-only and serves the
+  # dbt-produced tables over Quack so the existing MCP Toolbox
+  # source plumbing reaches them.
   # ---------------------------------------------------------------
   dagster:
     build: ./dagster
-    container_name: dagster
     environment:
       DAGSTER_HOME: /dagster_home
       # dlt's filesystem destination defaults to gzip'd JSONL named
@@ -431,6 +581,10 @@ services:
       - dagster-home:/dagster_home
     ports:
       - "3000:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     healthcheck:
       # /server_info returns JSON once gunicorn + the daemon are up.
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:3000/server_info', timeout=3).read(); sys.exit(0)\""]
@@ -438,42 +592,50 @@ services:
       timeout: 3s
       retries: 60
       start_period: 90s
+    profiles: ["dataeng"]
 
   # Third Quack server (engineered warehouse). Same image as the
   # other two; mounts the analytics-engineered-data volume read-only
-  # and serves /data/engineered.duckdb instead of the per-image
-  # /quack/seed.sql baked into the first two servers. quack-server-3
-  # only starts after Dagster has materialized at least once
-  # (entrypoint.sh in the dagster service runs `dagster asset
-  # materialize --select '*'` before starting the UI).
+  # and serves the dbt-produced Parquet views instead of the baked-in
+  # seed. Its own (throwaway) DuckDB file goes to a container-local
+  # path via QUACK_DB_PATH so the shared volume can stay :ro.
   quack-server-3:
     build: ./quack-server
-    container_name: duckdb-quack-3
     environment:
-      QUACK_TOKEN: ${QUACK_TOKEN:?set QUACK_TOKEN in .env}
+      QUACK_TOKEN: ${QUACK_TOKEN_ENGINEERED:?set QUACK_TOKEN_ENGINEERED in .env}
       QUACK_PORT: "9494"
+      QUACK_DB_PATH: /tmp/analytics.duckdb
     volumes:
-      # Same volume Dagster writes to. quack-server-3 needs write
-      # access for its own /data/analytics.duckdb (a tiny file that
-      # holds only the view definitions over the dbt-produced
-      # Parquets); dbt and dlt write into subdirs (/data/raw,
-      # /data/marts) that this container only reads.
-      - analytics-engineered-data:/data
+      # Same volume Dagster writes to — read-only here; this server
+      # only reads the dbt/dlt outputs (and the .bootstrap-ok
+      # sentinel) under /data.
+      - analytics-engineered-data:/data:ro
       # Mount-over the baked-in seed-based init with the engineered
       # variant: no seed, just CREATE VIEW over read_parquet for
       # each dbt model output.
       - ./quack-server/init-engineered.sql.tmpl:/quack/init.sql.tmpl:ro
     healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "9494"]
+      # Port open AND the Dagster bootstrap sentinel present. Without
+      # the sentinel check, a failed dlt/dbt bootstrap would leave
+      # this server "healthy" while serving views over Parquet files
+      # that don't exist.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9494 && [ -f /data/.bootstrap-ok ]"]
       interval: 2s
       timeout: 1s
       retries: 30
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     depends_on:
       dagster:
         condition: service_healthy
+    profiles: ["dataeng"]
 
 volumes:
   cube-data:
+  cube-store:
   superset-data:
   analytics-engineered-data:
   dagster-home:
+  grafana-data:

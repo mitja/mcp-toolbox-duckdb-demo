@@ -11,7 +11,8 @@
 -- "Pattern: federate non-DuckDB backends *inside* the remote
 -- Quack server".
 
-INSTALL quack FROM core_nightly;
+-- Extension is INSTALLed at image-build time (see Dockerfile); only
+-- LOAD remains here.
 LOAD quack;
 
 -- Views over the Parquet outputs dbt-duckdb writes. The filenames

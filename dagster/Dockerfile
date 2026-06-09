@@ -4,7 +4,8 @@
 # integrations + dlt's DuckDB destination + dbt-duckdb. One Python
 # install for the whole EL → T → orchestration pipeline.
 
-FROM python:3.12-slim
+# Pinned to a point release so rebuilds don't silently change the base.
+FROM python:3.12.13-slim
 
 WORKDIR /app
 

@@ -5,7 +5,9 @@
 # CALL quack_serve(...). The CLI is kept alive by piping /dev/null into
 # its stdin so the in-process Quack server threads outlive the init script.
 
-FROM debian:bookworm-slim
+# debian 12.x == bookworm; pinned to a point release so rebuilds don't
+# silently pick up a new base.
+FROM debian:12.14-slim
 
 ARG TARGETARCH
 ARG DUCKDB_VERSION=v1.5.2
@@ -22,6 +24,14 @@ RUN apt-get update \
  && unzip /tmp/d.zip -d /usr/local/bin \
  && rm /tmp/d.zip \
  && duckdb --version
+
+# Install the Quack extension at BUILD time, not container start.
+# This freezes the extension version into the image (core_nightly moves
+# daily) and removes the runtime network dependency on
+# extensions.duckdb.org — containers start offline and identically
+# until the image is rebuilt. init.sql only needs `LOAD quack`.
+RUN duckdb -c "INSTALL quack FROM core_nightly" \
+ && duckdb -c "LOAD quack"
 
 WORKDIR /quack
 COPY init.sql.tmpl seed.sql /quack/

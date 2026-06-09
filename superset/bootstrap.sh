@@ -19,14 +19,18 @@ SUPERSET_ADMIN_EMAIL="${SUPERSET_ADMIN_EMAIL:-admin@example.com}"
 echo "bootstrap: superset db upgrade"
 superset db upgrade
 
-# fab create-admin exits non-zero if the user already exists; allow that.
+# fab create-admin exits non-zero if the user already exists; allow that,
+# but echo the output so a *real* failure (bad metastore, broken config)
+# isn't silently swallowed.
 echo "bootstrap: ensure admin user exists"
-superset fab create-admin \
+if ! create_admin_out=$(superset fab create-admin \
     --username "${SUPERSET_ADMIN_USERNAME}" \
     --firstname Admin --lastname User \
     --email "${SUPERSET_ADMIN_EMAIL}" \
-    --password "${SUPERSET_ADMIN_PASSWORD}" \
-    || true
+    --password "${SUPERSET_ADMIN_PASSWORD}" 2>&1); then
+    echo "${create_admin_out}"
+    echo "bootstrap: create-admin failed (expected if the user already exists) — continuing"
+fi
 
 echo "bootstrap: superset init (permissions + default roles)"
 superset init
@@ -42,19 +46,28 @@ gunicorn \
 SUPERSET_PID=$!
 
 # Wait for /health to return 200 before the bootstrap REST calls.
+healthy=0
 for i in $(seq 1 60); do
     if curl -sf http://127.0.0.1:8088/health > /dev/null; then
         echo "bootstrap: superset is healthy"
+        healthy=1
         break
     fi
     sleep 1
 done
 
-# Run the API-driven dashboard bootstrap (idempotent).
-echo "bootstrap: registering Cube database + dataset + chart + dashboard"
-python3 /app/bootstrap.py || {
-    echo "bootstrap: dashboard bootstrap failed — superset stays up so the user can finish via UI"
-}
+if [ "${healthy}" -eq 1 ]; then
+    # Run the API-driven dashboard bootstrap (idempotent).
+    echo "bootstrap: registering Cube database + dataset + chart + dashboard"
+    python3 /app/bootstrap.py || {
+        echo "bootstrap: dashboard bootstrap failed — superset stays up so the user can finish via UI"
+    }
+else
+    # Don't fire REST calls at a server that never came up; the
+    # container healthcheck will flag it and gunicorn's own logs
+    # (below, via wait) are the place to debug.
+    echo "bootstrap: superset /health never turned green after 60s — skipping dashboard bootstrap"
+fi
 
 # Hand stdout/stderr back to gunicorn and wait on it.
 wait "${SUPERSET_PID}"

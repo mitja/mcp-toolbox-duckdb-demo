@@ -4,13 +4,17 @@
 # each entry's name and infer the kind from the parent. Do not also include
 # `kind:` or `name:` inside the entry — Toolbox rejects the duplicate.
 
+# Tokens are per-server (QUACK_TOKEN_SALES / _INVENTORY / _ENGINEERED,
+# see .env.example) so a leaked credential for one source never grants
+# access to another — and so the demo models real credential scoping.
+
 sources:
   sales-quack:
     type: duckdb-quack
     uri: quack:quack-server:9494         # service name "quack-server" on docker network
                                          # (the hostname "quack" alone trips a parser
                                          # bug in Quack — same name as the scheme).
-    token: ${QUACK_TOKEN}
+    token: ${QUACK_TOKEN_SALES}
     disable_ssl: true
     attach_alias: remote
     policy:
@@ -26,7 +30,7 @@ sources:
   inventory-quack:
     type: duckdb-quack
     uri: quack:quack-server-2:9494
-    token: ${QUACK_TOKEN}
+    token: ${QUACK_TOKEN_INVENTORY}
     disable_ssl: true
     attach_alias: inventory_remote
     policy:
@@ -43,9 +47,14 @@ sources:
   analytics-engineered:
     type: duckdb-quack
     uri: quack:quack-server-3:9494
-    token: ${QUACK_TOKEN}
+    token: ${QUACK_TOKEN_ENGINEERED}
     disable_ssl: true
     attach_alias: engineered_remote
+    # quack-server-3 lives behind the `dataeng` Compose profile, so it
+    # is absent in the default `docker compose up`. Defer the ATTACH to
+    # first query instead of startup so Toolbox boots without it; tools
+    # on this source simply error at call time until the profile is up.
+    attach_on_startup: false
     policy:
       read_only: true
       reject_multiple_statements: true
@@ -61,12 +70,15 @@ sources:
   combined-analytics:
     type: duckdb-quack
     uri: quack:quack-server:9494
-    token: ${QUACK_TOKEN}
+    token: ${QUACK_TOKEN_SALES}
     disable_ssl: true
     attach_alias: sales_remote
     additional_attachments:
       - uri: quack:quack-server-2:9494
         attach_alias: inventory_remote
+        # Attachments inherit the parent source's token unless one is
+        # set explicitly; with per-server tokens it must be explicit.
+        token: ${QUACK_TOKEN_INVENTORY}
     policy:
       read_only: true
       reject_multiple_statements: true

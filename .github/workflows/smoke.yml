@@ -1,0 +1,72 @@
+# End-to-end smoke test for the demo stack.
+#
+# Builds the core Compose stack (including the Toolbox image from the
+# mcp-toolbox-duckdb fork), waits for every healthcheck, runs the
+# concurrent trace-load test (which validates query results AND that
+# every trace's span tree landed fully stitched in Jaeger), and checks
+# that tools.yaml is in sync with the Cube model codegen.
+#
+# DISABLED BY DEFAULT: only `workflow_dispatch` (manual run from the
+# Actions tab) is wired up. To enable it on pushes/PRs, uncomment:
+#
+#   push:
+#     branches: [main]
+#   pull_request:
+#
+# The heavy `bi` / `dataeng` profiles are intentionally NOT exercised
+# here — the core stack fits comfortably in a standard runner.
+
+name: smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out demo repo
+        uses: actions/checkout@v4
+
+      - name: Check out mcp-toolbox-duckdb fork
+        uses: actions/checkout@v4
+        with:
+          # If the fork ever goes private, add a PAT via
+          # `token: ${{ secrets.TOOLBOX_CHECKOUT_TOKEN }}`.
+          repository: mitja/mcp-toolbox-duckdb
+          ref: feat/duckdb-quack
+          path: mcp-toolbox-duckdb
+
+      - name: Write .env
+        run: |
+          cat > .env <<'EOF'
+          QUACK_TOKEN_SALES=ci-sales-token-0001
+          QUACK_TOKEN_INVENTORY=ci-inventory-token-0001
+          QUACK_TOKEN_ENGINEERED=ci-engineered-token-0001
+          ANTHROPIC_API_KEY=unused-in-ci
+          TOOLBOX_SRC=./mcp-toolbox-duckdb
+          EOF
+
+      - name: Codegen drift check (cube model -> tools.yaml)
+        run: |
+          pip install pyyaml
+          python3 cube/gen_toolbox_from_cube.py
+          git diff --exit-code tools.yaml
+
+      - name: Build and start core stack
+        run: docker compose up -d --build --wait
+
+      - name: Collector health endpoint
+        run: curl -sf http://localhost:13133
+
+      - name: Run concurrent load test
+        run: docker compose --profile load run --rm trace-load
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose --profile '*' logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose --profile '*' down -v

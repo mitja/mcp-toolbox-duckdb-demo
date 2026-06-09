@@ -73,18 +73,43 @@ What's running, top to bottom:
 
 - Docker + Compose v2 (`docker compose ...`, not `docker-compose`).
 - A local clone of the [`mcp-toolbox-duckdb`](https://github.com/mitja/mcp-toolbox-duckdb)
-  fork as a **sibling directory** (so `../mcp-toolbox-duckdb` resolves from
-  this repo). The Compose file builds Toolbox from that directory.
+  fork (branch `feat/duckdb-quack`). Defaults to a **sibling directory**
+  (`../mcp-toolbox-duckdb`); override with `TOOLBOX_SRC` in `.env`:
+
+  ```bash
+  git clone -b feat/duckdb-quack https://github.com/mitja/mcp-toolbox-duckdb ../mcp-toolbox-duckdb
+  ```
 - An Anthropic API key, only if you want to run the LangGraph agent demo.
 
 ## Quickstart
 
 ```bash
 cp .env.example .env
-$EDITOR .env                    # set QUACK_TOKEN (and ANTHROPIC_API_KEY for the agent)
+$EDITOR .env                    # set the three QUACK_TOKEN_* values
+                                # (and ANTHROPIC_API_KEY for the agent)
 
-docker compose up --build       # builds and starts quack + toolbox
+docker compose up --build       # builds and starts the core stack
+# or: make up
 ```
+
+The core stack is `quack-server`, `quack-server-2`, `toolbox`,
+`otel-collector`, and `jaeger`. The heavier tracks are gated behind
+Compose profiles so the default `up` stays light:
+
+| Profile   | Services                  | Start with                            |
+| --------- | ------------------------- | ------------------------------------- |
+| `bi`      | cube-seed, cube, superset | `docker compose --profile bi up -d` (`make bi`) |
+| `dataeng` | dagster, quack-server-3   | `docker compose --profile dataeng up -d` (`make dataeng`) |
+| `obs`     | prometheus, grafana       | `docker compose --profile obs up -d` (`make obs`) |
+
+(The `analytics-engineered` Toolbox source sets
+`attach_on_startup: false`, so Toolbox boots fine while the `dataeng`
+profile is down — its two tools just error at call time until
+`quack-server-3` is up.)
+
+A `Makefile` wraps the common flows — `make help` lists them
+(`up`, `bi`, `dataeng`, `obs`, `trace`, `load-test`, `agent`,
+`inspect`, `codegen-check`, `smoke`, `clean`, …).
 
 > **Prefer an interactive walkthrough?** Open
 > [`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb) in
@@ -95,8 +120,13 @@ docker compose up --build       # builds and starts quack + toolbox
 > Code MCP config — and tears the stack down at the end. Needs
 > `requests` (already present in any standard Jupyter install).
 
-When `toolbox-duckdb-1` logs `Server ready to serve` (or similar), the MCP
-Toolbox is reachable on `localhost:5555`. Smoke-test the tool:
+When the `toolbox` service logs `Server ready to serve` (or similar —
+`docker compose logs -f toolbox`), the MCP
+Toolbox is reachable on `localhost:5555`. The service also has a
+container-internal healthcheck (a tiny static Go binary probing
+`GET /`, since the distroless runtime has no shell), so
+`docker compose up -d --wait` returns only once Toolbox has loaded
+its config and ATTACHed both core Quack servers. Smoke-test the tool:
 
 ```bash
 # List the default toolset (or any specific one)
@@ -864,7 +894,7 @@ warehouse-side definitions are duplicated; both surfaces query the
 same `sales` cube.
 
 ```bash
-docker compose up -d cube superset
+docker compose --profile bi up -d        # or: make bi
 # First-boot bootstrap takes ~60s while Superset migrates its
 # metastore. Watch `docker compose logs -f superset | grep bootstrap`.
 open http://localhost:8088   # admin / admin
@@ -955,7 +985,7 @@ sales/orders/inventory data. A new Quack server
 in a new `analytics_engineered` toolset.
 
 ```bash
-docker compose up -d dagster quack-server-3
+docker compose --profile dataeng up -d   # or: make dataeng
 # Dagster UI:   http://localhost:3000   (job graph, schedule, logs)
 # Tools:        analytics_engineered toolset (2 tools, see below)
 ```
@@ -1146,8 +1176,9 @@ authentication with a token-table macro.
 ## Troubleshooting
 
 - **`toolbox` exits with `ATTACH ... Authorization failed`**: the
-  `QUACK_TOKEN` in `.env` is not the same value the Quack server was
-  bootstrapped with, OR you have edited `init.sql.tmpl` to activate the
+  `QUACK_TOKEN_*` value in `.env` for that source is not the same value
+  the matching Quack server was bootstrapped with (tokens are
+  per-server: `QUACK_TOKEN_SALES` / `_INVENTORY` / `_ENGINEERED`), OR you have edited `init.sql.tmpl` to activate the
   `quack_authorization_function` before clients have ATTACHed (the macro
   is also called for ATTACH's internal catalog queries). For the demo,
   defer the activation: keep `init.sql.tmpl` as-shipped and run the
@@ -1160,6 +1191,13 @@ authentication with a token-table macro.
   image does not support `quack`. Confirm the `DUCKDB_VERSION` build arg in
   `quack-server/Dockerfile` matches a release where Quack is bundled in
   `core_nightly` (currently v1.5.2+).
+- **`superset` exits with `attempt to write a readonly database`**: the
+  `superset-data` volume was written by an older version of this stack
+  that ran Superset as root; the service now runs as the image's
+  `superset` user (uid 1000). Either fix ownership in place —
+  `docker run --rm -v mcp-toolbox-duckdb-demo_superset-data:/sh debian:12.14-slim chown -R 1000:1000 /sh`
+  — or drop the volume (`docker compose --profile bi down -v`; the
+  bootstrap recreates the dashboard on next start).
 - **LangGraph container fails on `import toolbox_langchain`**: the demo
   pins `toolbox-langchain>=0.4.0`. If your local PyPI mirror is older,
   override with `pip install --upgrade toolbox-langchain` in the
@@ -1176,7 +1214,7 @@ statements once Toolbox is up:
 
 ```bash
 # After `docker compose up` reports "Server ready to serve!":
-docker exec duckdb-quack duckdb /data/analytics.duckdb -cmd \
+docker compose exec quack-server duckdb /data/analytics.duckdb -cmd \
   "SET GLOBAL quack_authorization_function = 'read_only'" \
   -cmd ".quit"
 ```
@@ -1190,19 +1228,26 @@ a backstop against bugs or future raw-SQL tool surfaces.
 
 ```
 .
-├── docker-compose.yaml         # always-on: quack-server{,-2,-3}, toolbox, otel-collector, jaeger, cube, cube-seed, superset, dagster
-│                               # profile-gated: trace-client, trace-load, langgraph, inspector
-├── tools.yaml                  # MCP Toolbox source + tool config (6 toolsets, 3 sources)
+├── docker-compose.yaml         # core: quack-server{,-2}, toolbox, otel-collector, jaeger
+│                               # profiles: trace, load, agent, inspect, bi (cube + superset),
+│                               #           dataeng (dagster + quack-server-3), obs (prometheus + grafana)
+├── Makefile                    # task runner: make help
+├── .github/workflows/smoke.yml # CI smoke test (manual-only until enabled for push/PR)
+├── tools.yaml                  # MCP Toolbox source + tool config (6 toolsets, 4 sources)
 ├── quack-server/
-│   ├── Dockerfile              # Debian + DuckDB CLI + Quack
+│   ├── Dockerfile              # Debian + DuckDB CLI + Quack (extension INSTALLed at build)
 │   ├── entrypoint.sh           # envsubst init.sql.tmpl, then duckdb
-│   ├── init.sql.tmpl           # INSTALL/LOAD quack, seed, authz, serve
+│   ├── init.sql.tmpl           # LOAD quack, seed, authz, serve
 │   ├── seed.sql                # baked into image — sales + orders (~30 rows)
 │   ├── seed-inventory.sql      # mounted over seed.sql by quack-server-2 — products (~20 rows) + parquet view
 │   ├── gen_price_history.py    # reproducible generator for the parquet fixture
 │   └── product_price_history.parquet  # mounted into quack-server-2, exposed as a view in `main`
 ├── otel-collector/
-│   └── config.yaml             # OTLP receivers + jaeger forwarder + debug exporter
+│   └── config.yaml             # OTLP receivers + jaeger/prometheus forwarders + debug exporter
+├── prometheus/
+│   └── prometheus.yml          # scrapes the collector's :8889 metrics endpoint (profile: obs)
+├── grafana/
+│   └── provisioning/           # Prometheus pre-wired as default datasource (profile: obs)
 ├── trace-client/               # profiles: trace + load  (Python, no LLM)
 │   ├── Dockerfile
 │   ├── pyproject.toml

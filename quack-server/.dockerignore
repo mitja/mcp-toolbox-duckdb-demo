@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+# build context only needs the SQL templates + entrypoint
+gen_price_history.py

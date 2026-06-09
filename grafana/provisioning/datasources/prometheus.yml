@@ -1,0 +1,13 @@
+# Grafana datasource provisioning — wires the Prometheus service in as
+# the default datasource so the `obs` profile is chart-ready on first
+# login (admin/admin) with zero clicks.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

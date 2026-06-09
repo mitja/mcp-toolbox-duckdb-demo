@@ -1,0 +1,11 @@
+# Prometheus config for the `obs` Compose profile. One job: scrape the
+# OTel collector's prometheus exporter (:8889), where every metric the
+# toolbox (and any other OTLP client) emits lands.
+
+global:
+  scrape_interval: 5s # demo-friendly; relax to 15-60s for real use
+
+scrape_configs:
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
