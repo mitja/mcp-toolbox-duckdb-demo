@@ -1,7 +1,12 @@
 """LangGraph ReAct demo wired through MCP Toolbox.
 
-The agent loads the analytics_readonly toolset, then asks Claude one
-question that should be answered using the revenue_by_customer tool.
+The agent loads the ontology toolset (the business-meaning layer)
+plus the analytics_readonly toolset, then asks Claude a question
+whose words are deliberately NOT tool names: "best sellers" should
+be resolved through the glossary (top_product = units shipped, NOT
+revenue) before the agent routes to the top_products tool and cites
+the definition it used — the resolve-then-route loop the ontology
+track exists to demonstrate.
 With OTEL_EXPORTER_OTLP_ENDPOINT set in the env (it is, inside the
 demo's docker network), every outgoing HTTP call from this process
 is auto-instrumented: spans for the Toolbox tool call and for the
@@ -75,9 +80,19 @@ def main() -> int:
     from toolbox_langchain import ToolboxClient
 
     toolbox_url = os.environ.get("TOOLBOX_URL", "http://toolbox:5000")
-    question = (
-        "Which customers' names match 'gmbh', and what is each one's total "
-        "revenue? List them from highest to lowest."
+    question = "What are our best sellers right now?"
+
+    # The resolve-then-route loop: business meaning first, data second.
+    # This is the same instruction a platform tenant's sandbox agent
+    # would ship with (see the ontology section in the README).
+    system_prompt = (
+        "You are this business's data analyst. Business terms have "
+        "reviewed definitions here: before answering, resolve the "
+        "user's words with glossary_lookup / ontology_search, use "
+        "ontology_bindings to pick the right data tool, and respect "
+        "any caveats. In your answer, cite the glossary definition "
+        "you applied. If a term has no definition or no implementing "
+        "tool, say so instead of guessing."
     )
 
     print(f"toolbox: {toolbox_url}")
@@ -95,11 +110,13 @@ def main() -> int:
         protocol=Protocol.MCP_LATEST,
         telemetry_enabled=True,
     )
-    tools = client.load_toolset("analytics_readonly")
+    tools = client.load_toolset("ontology") + client.load_toolset(
+        "analytics_readonly"
+    )
     print(f"loaded {len(tools)} tools: {[t.name for t in tools]}\n")
 
     model = ChatAnthropic(model="claude-sonnet-4-6", temperature=0)
-    agent = create_agent(model, tools)
+    agent = create_agent(model, tools, system_prompt=system_prompt)
 
     def run() -> dict:
         return agent.invoke({"messages": [("user", question)]})

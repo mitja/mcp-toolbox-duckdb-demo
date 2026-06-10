@@ -1150,9 +1150,14 @@ is the demo-scale prototype of the platform concept's ontology layer
 docker compose --profile agent run --rm langgraph
 ```
 
-The agent loads the `analytics_readonly` toolset over HTTP, then asks Claude
-to summarize revenue for customers matching "gmbh". It prints the
-intermediate tool calls and the final answer.
+The agent loads the `ontology` + `analytics_readonly` toolsets over
+HTTP, then asks Claude *"What are our best sellers right now?"* — a
+question whose words are deliberately not tool names. The system
+prompt instructs the resolve-then-route loop: the agent looks up
+"best sellers" in the glossary (synonym of `top_product`, which this
+business defines as units shipped, NOT revenue), routes to the
+`top_products` tool, and cites the definition in its answer. It
+prints the intermediate tool calls and the final answer.
 
 With OTel exporter env vars in place (the Compose file sets them by
 default), the LangGraph process emits an `agent.invoke` span and
@@ -1163,9 +1168,10 @@ Jaeger and stitch with the toolbox-side spans into a single trace:
 ```
 langgraph-demo     agent.invoke
 langgraph-demo       POST                              (Anthropic API)
-langgraph-demo       tools/call revenue_by_customer    (MCP client span)
+langgraph-demo       tools/call glossary_lookup        (resolve "best sellers")
+langgraph-demo       tools/call top_products           (route + execute)
 duckdb-quack-demo      toolbox/server/mcp/http
-duckdb-quack-demo        tools/call revenue_by_customer
+duckdb-quack-demo        tools/call top_products
 duckdb-quack-demo          duckdb.query                ← our Go span
 ```
 
@@ -1179,12 +1185,18 @@ telemetry_enabled=True)` (see [`langgraph/app.py`](langgraph/app.py));
 Copy [`claude-code/claude_config.example.json`](claude-code/claude_config.example.json)
 into your Claude Code MCP config (typically `~/.claude.json` or
 `./.mcp.json`). With the Compose stack running on `localhost:5555`,
-Claude Code will list all twelve tools (the default `/mcp` endpoint
-exposes the full surface). To scope it to just one toolset, change
-the URL in the config from `http://localhost:5555/mcp` to
-`http://localhost:5555/mcp/<toolset_name>` — `analytics_readonly`,
-`analytics_metadata`, `inventory_readonly`, or `cross_catalog`
-(don't expose `analytics_dev` to a production agent).
+Claude Code will list the full tool surface (the default `/mcp`
+endpoint exposes every registered tool, including the `ontology`
+toolset). To scope it to just one toolset, change the URL in the
+config from `http://localhost:5555/mcp` to
+`http://localhost:5555/mcp/<toolset_name>` — `ontology`,
+`analytics_readonly`, `analytics_metadata`, `inventory_readonly`,
+or `cross_catalog` (don't expose `analytics_dev` to a production
+agent). Pair the config with
+[`claude-code/CLAUDE.example.md`](claude-code/CLAUDE.example.md) —
+the resolve-then-route analyst instructions that make Claude consult
+the glossary before picking a data tool and cite the definitions it
+used.
 
 ## Wiring Pi (pi.dev)
 
@@ -1201,15 +1213,20 @@ system prompt).
 
 Copy [`pi/pi_config.example.json`](pi/pi_config.example.json) into
 your Pi config (project-level `.pi/mcp.json` or global
-`~/.pi/agent/mcp.json`). The example registers four MCP servers,
+`~/.pi/agent/mcp.json`). The example registers five MCP servers,
 each scoped to a different Toolbox toolset:
 
 | Server entry                  | Toolbox route                    | Lifecycle |
 |-------------------------------|----------------------------------|-----------|
+| `toolbox-ontology`            | `/mcp/ontology`                  | `eager`   |
 | `toolbox-analytics-readonly`  | `/mcp/analytics_readonly`        | `eager`   |
 | `toolbox-analytics-metadata`  | `/mcp/analytics_metadata`        | `eager`   |
 | `toolbox-inventory-readonly`  | `/mcp/inventory_readonly`        | `eager`   |
 | `toolbox-cross-catalog`       | `/mcp/cross_catalog`             | `lazy`    |
+
+`toolbox-ontology` is eager on purpose: it's the resolve-first
+layer — the glossary and routing lookups an agent should make
+before touching any data tool.
 
 `eager` servers auto-connect when Pi starts; `lazy` ones connect
 only on demand (Pi prompts before activating them). Drop any entry
@@ -1338,7 +1355,8 @@ a backstop against bugs or future raw-SQL tool surfaces.
 ├── notebooks/
 │   └── walkthrough.ipynb       # 40-cell interactive tour of the whole demo
 ├── claude-code/
-│   └── claude_config.example.json   # default /mcp (all tools); swap path to scope
+│   ├── claude_config.example.json   # default /mcp (all tools); swap path to scope
+│   └── CLAUDE.example.md            # resolve-then-route analyst instructions (ontology loop)
 ├── pi/
 │   └── pi_config.example.json       # four servers, each scoped to one toolset
 ├── cube/                             # Cube Core semantic layer
