@@ -1,0 +1,14 @@
+# Business entity: order. See customer.yaml for the authoring rules.
+entity: order
+description: >-
+  A product line-item fulfilled for a customer — one row per product
+  per order in the orders table. Carries quantities, not money; the
+  monetary side of the same activity lives on the sales entity's
+  invoices.
+synonyms: [line item, purchase]
+owner: ops
+relates_to:
+  - { entity: product, rel: contains }
+caveats:
+  - Orders and sales invoices join on (customer, order_date), not on
+    an order id — the demo schema has no shared key.

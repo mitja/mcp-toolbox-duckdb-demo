@@ -1,0 +1,16 @@
+# Business entity: customer. Hand-authored — this file is the
+# reviewed source of truth for what "customer" means in this demo
+# business; the compiled graph (quack-server/seed-ontology.sql) is
+# derived from it by ontology/gen_ontology.py.
+entity: customer
+description: >-
+  A company that has placed at least one sales order. One row per
+  invoice in the sales table; the same customer appears on many
+  invoices.
+synonyms: [client, account, buyer]
+owner: ops
+relates_to:
+  - { entity: order, rel: places }
+caveats:
+  - Customer names are free-text legal names ("Alice GmbH"); there is
+    no customer master table, so name spelling is the identity.

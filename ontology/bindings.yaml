@@ -1,0 +1,39 @@
+# Ontology bindings — the hand-authored edges that attach business
+# concepts (entities, glossary terms) to the analytics stack (cubes,
+# tools, dbt models). Compiled into ontology_edges by
+# ontology/gen_ontology.py, which VALIDATES every reference: a
+# binding to a cube/tool/model that no longer exists fails the
+# codegen, so renames surface in CI instead of at agent runtime.
+#
+# Relations (from → to):
+#   measured_by    entity → cube        the cube that quantifies it
+#   queryable_via  entity → tool        hand-authored tools (cube-
+#                                       generated tools get their
+#                                       exposed_by edges from
+#                                       cube/codegen.yml automatically)
+#   derived_from   entity → dbt_model   the model that produces it
+#   implemented_as term → measure|tool|dbt_model
+#   exposed_by     dbt_model → tool     the tool that serves the model
+#                                       (cube → tool edges come from
+#                                       cube/codegen.yml; dbt-model-
+#                                       backed tools are bound here)
+
+- { from: { entity: customer },   rel: measured_by,    to: { cube: sales } }
+- { from: { entity: customer },   rel: queryable_via,  to: { tool: revenue_by_customer } }
+- { from: { entity: order },      rel: measured_by,    to: { cube: orders } }
+- { from: { entity: product },    rel: queryable_via,  to: { tool: top_products } }
+- { from: { entity: product },    rel: queryable_via,  to: { tool: low_stock_items } }
+- { from: { entity: product },    rel: queryable_via,  to: { tool: current_prices } }
+- { from: { entity: product },    rel: queryable_via,  to: { tool: price_history_for_product } }
+- { from: { entity: product },    rel: queryable_via,  to: { tool: product_orders_overview } }
+- { from: { entity: web_session }, rel: derived_from,  to: { dbt_model: stg_events } }
+- { from: { entity: web_session }, rel: queryable_via, to: { tool: daily_traffic_for_country } }
+
+- { from: { dbt_model: top_pages_30d }, rel: exposed_by, to: { tool: top_pages_30d } }
+- { from: { dbt_model: daily_traffic }, rel: exposed_by, to: { tool: daily_traffic_for_country } }
+
+- { from: { term: revenue },     rel: implemented_as, to: { measure: sales.revenue } }
+- { from: { term: top_product }, rel: implemented_as, to: { tool: top_products } }
+- { from: { term: top_product }, rel: implemented_as, to: { tool: cube_orders_top_products } }
+- { from: { term: low_stock },   rel: implemented_as, to: { tool: low_stock_items } }
+- { from: { term: page_view },   rel: implemented_as, to: { dbt_model: stg_events } }

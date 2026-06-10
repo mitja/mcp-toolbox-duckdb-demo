@@ -54,6 +54,11 @@ jobs:
           python3 cube/gen_toolbox_from_cube.py
           git diff --exit-code tools.yaml
 
+      - name: Ontology drift check (ontology/cube/dbt/tools -> seed-ontology.sql)
+        run: |
+          python3 ontology/gen_ontology.py
+          git diff --exit-code quack-server/seed-ontology.sql
+
       - name: Build and start core stack
         run: docker compose up -d --build --wait
 

@@ -5,7 +5,8 @@
 COMPOSE := docker compose
 
 .PHONY: help build up down clean logs bi dataeng obs all \
-        trace load-test agent inspect codegen codegen-check smoke
+        trace load-test agent inspect codegen codegen-check \
+        ontology ontology-check smoke
 
 help: ## List targets
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -54,6 +55,12 @@ codegen: ## Regenerate the cube_* tools in tools.yaml from cube/model
 
 codegen-check: codegen ## Fail if tools.yaml is out of sync with cube/model
 	git diff --exit-code tools.yaml
+
+ontology: ## Recompile the ontology graph (quack-server/seed-ontology.sql)
+	uv run --no-project --with pyyaml python3 ontology/gen_ontology.py
+
+ontology-check: ontology ## Fail if the compiled ontology is out of sync with its sources
+	git diff --exit-code quack-server/seed-ontology.sql
 
 smoke: ## CI-style end-to-end check: build, start core, run load test, tear down
 	$(COMPOSE) up -d --build --wait

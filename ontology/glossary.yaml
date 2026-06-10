@@ -1,0 +1,47 @@
+# Business glossary — the reviewed definitions of the terms this
+# (demo) business uses. Hand-authored; compiled into the
+# ontology_glossary table (and term nodes in the graph) by
+# ontology/gen_ontology.py. `decided_by` records provenance so a
+# disputed definition has someone to argue with.
+#
+# An agent is expected to resolve terms here BEFORE picking a data
+# tool, and to cite the definition it used in its answer.
+
+- term: revenue
+  definition: >-
+    The booked invoice amount, regardless of payment status. Lives on
+    sales invoices; quantities shipped are a different question (see
+    top_product).
+  synonyms: [turnover, sales amount]
+  decided_by: ops, 2026-06-11
+
+- term: active_customer
+  definition: >-
+    A customer with at least one sales invoice in the trailing 90
+    days. No curated tool implements this window yet — say so rather
+    than substituting all-time revenue.
+  synonyms: [active client]
+  decided_by: ops, 2026-06-11
+
+- term: top_product
+  definition: >-
+    Products ranked by total units shipped (orders.total_qty), NOT by
+    revenue. A revenue-ranked product list is a different question
+    and has no curated tool today.
+  synonyms: [best seller, top seller]
+  decided_by: ops, 2026-06-11
+
+- term: low_stock
+  definition: >-
+    A product whose stock_qty has fallen to or below its reorder_at
+    threshold in the inventory catalog.
+  synonyms: [reorder needed, out of stock risk]
+  decided_by: ops, 2026-06-11
+
+- term: page_view
+  definition: >-
+    A web event with event_type 'page_view' in the raw events stream;
+    the unit behind daily traffic counts and the top-pages
+    leaderboard.
+  synonyms: [pageview, page hit]
+  decided_by: marketing, 2026-06-11

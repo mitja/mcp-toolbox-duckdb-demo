@@ -34,7 +34,7 @@ RUN duckdb -c "INSTALL quack FROM core_nightly" \
  && duckdb -c "LOAD quack"
 
 WORKDIR /quack
-COPY init.sql.tmpl seed.sql /quack/
+COPY init.sql.tmpl seed.sql seed-ontology.sql /quack/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

@@ -1067,6 +1067,83 @@ the data behind them refreshes on a Dagster schedule.
   schema.yml would catch null-revenue / out-of-range dates / etc.
   Easy to extend.
 
+## Business ontology (the meaning layer, as tools)
+
+The curated toolsets tell an agent what it *may do*; the `ontology`
+toolset tells it what things *mean* — which business entities and
+glossary terms exist, what this business's definition of "revenue"
+or "top product" is, and which cube/tool/dbt-model implements each
+concept. The intended agent loop: resolve the user's words first,
+then route to the right data tool, then cite the definition used.
+
+The ontology is **authored, not inferred**, and compiled like the
+cube codegen:
+
+```text
+ontology/entities/*.yaml   business entities (synonyms, owner, caveats)
+ontology/glossary.yaml     term definitions with provenance
+ontology/bindings.yaml     entity/term -> cube/tool/model edges (validated)
+        │
+        │  merged with the cube model, tools.yaml, and the dbt
+        │  project (which already describe most of the graph), by:
+        ▼
+ontology/gen_ontology.py   → quack-server/seed-ontology.sql (committed)
+```
+
+The compiled graph is served by the sales quack-server as plain
+tables (`ontology_nodes`, `ontology_edges`, `ontology_glossary`,
+plus precomputed `ontology_bindings` / `ontology_paths` traversals)
+and queried by five parameterized tools:
+
+```bash
+# Resolve a business term — synonym-aware ("best seller" -> top_product,
+# which is defined as units shipped, NOT revenue):
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://localhost:5555/api/tool/ontology_search/invoke \
+  -d '{"pattern":"best seller"}' | jq '.result | fromjson | .rows'
+
+# The reviewed definition, with provenance:
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://localhost:5555/api/tool/glossary_lookup/invoke \
+  -d '{"term":"turnover"}' | jq '.result | fromjson | .rows'
+
+# Route: which cubes/tools/models implement this concept?
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://localhost:5555/api/tool/ontology_bindings/invoke \
+  -d '{"name":"top_product"}' | jq '.result | fromjson | .rows[:3]'
+
+# Explain a connection (shortest path, up to 4 hops):
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://localhost:5555/api/tool/ontology_path/invoke \
+  -d '{"a":"customer","b":"analytics_readonly"}' \
+  | jq '.result | fromjson | .rows'
+```
+
+(`ontology_describe` returns the full card for one node: caveats,
+owner, relations in both directions.)
+
+Editing workflow, mirroring the cube codegen:
+
+```bash
+# 1. Edit ontology/*.yaml (or the cube model / tools.yaml / dbt project)
+# 2. Recompile — bindings to renamed/deleted things FAIL here, and
+#    cubes no entity claims are warned about:
+make ontology
+# 3. Rebuild the sales quack-server to pick up the new seed:
+docker compose up -d --build quack-server
+# CI guard (same pattern as codegen-check):
+make ontology-check
+```
+
+Two design notes worth stealing: traversals are **precomputed at
+codegen time** because the graph is static (it rebuilds from git) and
+a `duckdb-sql` statement gets exactly one streaming scan over the
+Quack ATTACH (`push_down_to_remote` would lift that, but rejects
+bound parameters); and the graph is **self-describing** — the five
+ontology tools appear as nodes in the graph they query. This track
+is the demo-scale prototype of the platform concept's ontology layer
+(doc 10 in the agentic-data-analytics-platform specs).
+
 ## LangGraph agent demo
 
 ```bash
@@ -1233,12 +1310,13 @@ a backstop against bugs or future raw-SQL tool surfaces.
 │                               #           dataeng (dagster + quack-server-3), obs (prometheus + grafana)
 ├── Makefile                    # task runner: make help
 ├── .github/workflows/smoke.yml # CI smoke test (manual-only until enabled for push/PR)
-├── tools.yaml                  # MCP Toolbox source + tool config (6 toolsets, 4 sources)
+├── tools.yaml                  # MCP Toolbox source + tool config (7 toolsets, 4 sources)
 ├── quack-server/
 │   ├── Dockerfile              # Debian + DuckDB CLI + Quack (extension INSTALLed at build)
 │   ├── entrypoint.sh           # envsubst init.sql.tmpl, then duckdb
 │   ├── init.sql.tmpl           # LOAD quack, seed, authz, serve
-│   ├── seed.sql                # baked into image — sales + orders (~30 rows)
+│   ├── seed.sql                # baked into image — sales + orders (~30 rows) + .read seed-ontology.sql
+│   ├── seed-ontology.sql       # GENERATED compiled ontology graph (make ontology)
 │   ├── seed-inventory.sql      # mounted over seed.sql by quack-server-2 — products (~20 rows) + parquet view
 │   ├── gen_price_history.py    # reproducible generator for the parquet fixture
 │   └── product_price_history.parquet  # mounted into quack-server-2, exposed as a view in `main`
@@ -1267,6 +1345,11 @@ a backstop against bugs or future raw-SQL tool surfaces.
 │   ├── model/cubes/                  # sales.yml + orders.yml (measures + dimensions)
 │   ├── codegen.yml                   # slice list — which (cube × measures × dimensions) become tools
 │   └── gen_toolbox_from_cube.py      # cube YAML + codegen.yml → cube_* entries in tools.yaml
+├── ontology/                          # Business ontology track (the meaning layer)
+│   ├── entities/                     # authored business entities (synonyms, owner, caveats)
+│   ├── glossary.yaml                 # authored term definitions with provenance
+│   ├── bindings.yaml                 # authored entity/term → cube/tool/model edges (validated)
+│   └── gen_ontology.py               # + cube model + tools.yaml + dbt → seed-ontology.sql
 ├── superset/                          # Apache Superset BI sidecar (Cube → Superset → dashboard)
 │   ├── superset_config.py            # SECRET_KEY, ROW_LIMIT, Talisman off for the demo
 │   ├── bootstrap.sh                  # idempotent: db upgrade + create-admin + init + gunicorn

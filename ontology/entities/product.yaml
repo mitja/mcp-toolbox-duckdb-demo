@@ -1,0 +1,13 @@
+# Business entity: product. See customer.yaml for the authoring rules.
+entity: product
+description: >-
+  A sellable SKU ("Widget", "Sprocket", "Gizmo"). Stock levels and
+  prices live in the inventory catalog on a separate warehouse from
+  the sales activity.
+synonyms: [sku, item, article]
+owner: ops
+caveats:
+  - Unit prices change over time; the current price is the open-ended
+    row in product_price_history, not a column on products.
+  - Sales rows and inventory rows join on product NAME across two
+    different Quack servers.
