@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "toolbox-analytics": {
-      "url": "http://localhost:5555/mcp",
+      "url": "http://localhost:5556/mcp/analytics_readonly",
       "transport": "http"
     }
   }

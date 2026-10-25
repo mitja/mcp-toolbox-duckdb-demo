@@ -201,7 +201,10 @@ services:
     ports:
       # Host 5555 → container 5000. macOS binds 5000 to AirPlay by default,
       # which intercepts the published port; pick a free host port.
-      - "5555:5000"
+      # Loopback only: this is the person's door (REST API, UI, every
+      # toolset). Agents go through `edge` on 5556, which offers the
+      # toolsets' MCP endpoints and nothing else.
+      - "127.0.0.1:5555:5000"
     healthcheck:
       test: ["CMD", "/healthcheck"]
       interval: 2s
@@ -221,6 +224,23 @@ services:
         condition: service_healthy
       otel-collector:
         condition: service_started
+
+  # The agents' door: Caddy in front of the Toolbox that passes only
+  # /mcp/<toolset> for the toolsets meant for agents (edge/Caddyfile). The
+  # Toolbox's /mcp, /api and /ui would let a client step outside its toolset.
+  edge:
+    image: caddy:2.10.2-alpine
+    volumes:
+      - ./edge/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "5556:80"
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+    depends_on:
+      toolbox:
+        condition: service_healthy
 
   otel-collector:
     # Core (not -contrib) distribution: everything this config uses
@@ -348,7 +368,8 @@ services:
   langgraph:
     build: ./langgraph
     environment:
-      TOOLBOX_URL: http://toolbox:5000
+      # Through the edge: the agent gets the toolsets' MCP endpoints only.
+      TOOLBOX_URL: http://edge
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
       # OTel propagation: same collector as the toolbox-side stack.
       # With these set, the agent's outgoing HTTP calls auto-inject
@@ -358,8 +379,8 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
       OTEL_SERVICE_NAME: langgraph-demo
     depends_on:
-      toolbox:
-        condition: service_healthy
+      edge:
+        condition: service_started
     profiles: ["agent"]
 
   # MCP Inspector: a web UI for exploring an MCP server's

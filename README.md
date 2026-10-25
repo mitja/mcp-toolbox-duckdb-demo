@@ -11,8 +11,10 @@ lives in the sibling fork [`mitja/mcp-toolbox-duckdb`](https://github.com/mitja/
 
 What's running, top to bottom:
 
-- **Host clients** — Claude Code via MCP at `localhost:5555/mcp`,
-  `curl`/notebook against `/api/tool/<name>/invoke`, and your browser
+- **Host clients** — agents (Claude Code, Pi) via MCP at the **edge**,
+  `localhost:5556/mcp/<toolset>` (the toolsets' MCP endpoints only),
+  a person with `curl`/notebook against the Toolbox itself on
+  `127.0.0.1:5555` (`/api/tool/<name>/invoke`, `/mcp`), and your browser
   for six web UIs: **MCP Inspector** (`:6274`), the built-in
   **Toolbox UI** (`:5555/ui` — tool browser + invoker shipped with
   Toolbox), **Cube Playground** (`:4000` — the semantic-layer
@@ -1184,15 +1186,15 @@ telemetry_enabled=True)` (see [`langgraph/app.py`](langgraph/app.py));
 
 Copy [`claude-code/claude_config.example.json`](claude-code/claude_config.example.json)
 into your Claude Code MCP config (typically `~/.claude.json` or
-`./.mcp.json`). With the Compose stack running on `localhost:5555`,
-Claude Code will list the full tool surface (the default `/mcp`
-endpoint exposes every registered tool, including the `ontology`
-toolset). To scope it to just one toolset, change the URL in the
-config from `http://localhost:5555/mcp` to
-`http://localhost:5555/mcp/<toolset_name>` — `ontology`,
-`analytics_readonly`, `analytics_metadata`, `inventory_readonly`,
-or `cross_catalog` (don't expose `analytics_dev` to a production
-agent). Pair the config with
+`./.mcp.json`). It points at the edge,
+`http://localhost:5556/mcp/analytics_readonly`; change the toolset in
+the URL to `ontology`, `analytics_metadata`, `inventory_readonly`,
+`cross_catalog`, `analytics_cube_backed` or `analytics_engineered`.
+The edge does not offer the catch-all `/mcp` (every tool, including
+`dev_duckdb_execute_sql`), `/api`, `/ui` or `analytics_dev` — see
+"What's enforced where". (Node-based clients on macOS: if
+`localhost` resolves to IPv6 first and the call hangs, use
+`127.0.0.1`.) Pair the config with
 [`claude-code/CLAUDE.example.md`](claude-code/CLAUDE.example.md) —
 the resolve-then-route analyst instructions that make Claude consult
 the glossary before picking a data tool and cite the definitions it
@@ -1249,18 +1251,34 @@ catch-all `/mcp`.
 
 Defense in depth, listed by layer (closest to the agent first):
 
+0. **The edge** (`edge/Caddyfile`, host port 5556) — a toolset is only a
+   boundary when a client cannot reach the Toolbox's other endpoints:
+   `/mcp` lists every tool (also `dev_duckdb_execute_sql`), and
+   `/api/tool/<name>/invoke` and `/ui` call any tool by name whatever
+   toolset the client was given. Agents get `/mcp/<toolset>` for the
+   agent toolsets and nothing else; the Toolbox's own port is bound to
+   `127.0.0.1` for a person.
 1. **`duckdb-sql` tool, config-load validator** — multi-statement
-   rejection, leading-keyword allowlist, forbidden-substring scan. Catches
-   developer mistakes in `tools.yaml` (e.g., a stray `DROP TABLE`); refuses
-   to start the server if any tool fails the policy.
+   rejection, leading-keyword allowlist, forbidden-substring scan, plus
+   each source's `policy.forbidden_patterns` (`quack_query`, the file
+   readers such as `read_csv`, `getenv`): without them a `SELECT` read
+   `/etc/passwd` in the Toolbox container and carried a `DELETE` to the
+   data server inside `quack_query(...)`. Catches developer mistakes in
+   `tools.yaml` (e.g., a stray `DROP TABLE`); refuses to start the server
+   if any tool fails the policy, and runs on every call of
+   `dev_duckdb_execute_sql`.
 2. **Tool invocation timeouts and row caps** — `policy.timeout` and
    `policy.max_rows` from the source config. Excess rows are dropped and
    the response sets `truncated: true`.
-3. **Quack server authorization callback** — the `read_only` macro on
-   the Quack server is the real security boundary. Even if a destructive
-   statement somehow reaches the server (raw query, bypassed validator,
-   bug), the server refuses anything that does not start with
-   `SELECT|WITH|EXPLAIN|DESCRIBE|SHOW`.
+3. **Quack server authorization callback** — the `read_only` macro
+   (`quack-server/authz.sql`) is the real security boundary, on before
+   any client connects. DuckDB's parser decides: exactly one `SELECT`
+   that reads no file. Even a client that holds the server's token
+   cannot `DELETE`, `UPDATE`, `DROP`, `COPY`, stack
+   `SELECT 1; DELETE ...`, or `read_csv('/etc/passwd')`.
+
+`make authz-check` (part of `make smoke`) proves all of it against the
+running stack: `scripts/authz-check.sh`.
 
 This demo deliberately uses **default Quack authentication** (client TOKEN
 must equal the bootstrap token). Production deployments should run the
@@ -1272,12 +1290,11 @@ authentication with a token-table macro.
 - **`toolbox` exits with `ATTACH ... Authorization failed`**: the
   `QUACK_TOKEN_*` value in `.env` for that source is not the same value
   the matching Quack server was bootstrapped with (tokens are
-  per-server: `QUACK_TOKEN_SALES` / `_INVENTORY` / `_ENGINEERED`), OR you have edited `init.sql.tmpl` to activate the
-  `quack_authorization_function` before clients have ATTACHed (the macro
-  is also called for ATTACH's internal catalog queries). For the demo,
-  defer the activation: keep `init.sql.tmpl` as-shipped and run the
-  `SET GLOBAL` only after Toolbox has finished starting (see "Enabling
-  server-side authz" below).
+  per-server: `QUACK_TOKEN_SALES` / `_INVENTORY` / `_ENGINEERED`), OR the
+  authorization macro returns a boolean (it must return the query, see
+  `quack-server/authz.sql`), OR the image's Quack nightly is older than
+  893744a (1693647 answered every request with HTTP 500 once a macro
+  was the callback): rebuild with `--no-cache`.
 - **`localhost:5000` returns `AirTunes/...` or "empty reply"**: macOS
   binds 5000 to AirPlay by default. The demo publishes on host port
   `5555` to dodge it; use `http://localhost:5555`.
@@ -1297,41 +1314,36 @@ authentication with a token-table macro.
   override with `pip install --upgrade toolbox-langchain` in the
   Dockerfile or pin a specific version.
 
-### Enabling server-side authz (optional)
+### Server-side authz (on by default)
 
-Layer 3 of the defense-in-depth model (`quack_authorization_function`
-= `read_only`) is created but NOT activated by `init.sql.tmpl` because
-Quack invokes the macro on the catalog probe queries that `ATTACH`
-itself issues — activating it before the client ATTACH would break the
-client's startup. To exercise server-side rejection of destructive
-statements once Toolbox is up:
-
-```bash
-# After `docker compose up` reports "Server ready to serve!":
-docker compose exec quack-server duckdb /data/analytics.duckdb -cmd \
-  "SET GLOBAL quack_authorization_function = 'read_only'" \
-  -cmd ".quit"
-```
-
-A subsequent `INSERT`/`UPDATE`/`DELETE` reaching the server will be
-rejected. The Toolbox-side tool-layer validator (Layer 1) already
-rejects such statements at config load, so this layer matters only as
-a backstop against bugs or future raw-SQL tool surfaces.
+Layer 3 (`quack_authorization_function = 'read_only'`) is switched on by
+`init.sql.tmpl` before `quack_serve`, so it holds from the first client
+on. An earlier version of this demo left it off, believing that the macro
+rejected the catalog probes `ATTACH` issues; the real cause was that the
+macro returned a boolean, while Quack runs the query the callback
+**returns** (see `quack-server/authz.sql` and NOTES.md). The server's
+init (it holds the token) goes to DuckDB on stdin, the result row of
+`quack_serve` (it holds the token too) is kept out of the log, and a
+failing init statement stops the server (`duckdb -bail`) instead of
+serving without the callback.
 
 ## Layout
 
 ```
 .
-├── docker-compose.yaml         # core: quack-server{,-2}, toolbox, otel-collector, jaeger
+├── docker-compose.yaml         # core: quack-server{,-2}, toolbox, edge, otel-collector, jaeger
 │                               # profiles: trace, load, agent, inspect, bi (cube + superset),
 │                               #           dataeng (dagster + quack-server-3), obs (prometheus + grafana)
 ├── Makefile                    # task runner: make help
 ├── .github/workflows/smoke.yml # CI smoke test (manual-only until enabled for push/PR)
 ├── tools.yaml                  # MCP Toolbox source + tool config (7 toolsets, 4 sources)
+├── edge/Caddyfile              # the agents' door (:5556): /mcp/<toolset> only
+├── scripts/authz-check.sh      # proves the read-only posture (make authz-check)
 ├── quack-server/
 │   ├── Dockerfile              # Debian + DuckDB CLI + Quack (extension INSTALLed at build)
-│   ├── entrypoint.sh           # envsubst init.sql.tmpl, then duckdb
+│   ├── entrypoint.sh           # envsubst init.sql.tmpl, then duckdb with the init on stdin
 │   ├── init.sql.tmpl           # LOAD quack, seed, authz, serve
+│   ├── authz.sql               # the read-only authorization callback (both init templates read it)
 │   ├── seed.sql                # baked into image — sales + orders (~30 rows) + .read seed-ontology.sql
 │   ├── seed-ontology.sql       # GENERATED compiled ontology graph (make ontology)
 │   ├── seed-inventory.sql      # mounted over seed.sql by quack-server-2 — products (~20 rows) + parquet view

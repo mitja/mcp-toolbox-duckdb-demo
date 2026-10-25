@@ -1,0 +1,23 @@
+# The agents' door to the Toolbox (service `edge`, host port 5556).
+#
+# A Toolbox toolset is only a boundary when the client cannot reach the
+# Toolbox's other endpoints: its own /mcp lists EVERY tool (also
+# dev_duckdb_execute_sql), and /api/tool/<name>/invoke and /ui call any tool
+# by name, whatever toolset the client was given. So agents get a toolset's
+# MCP endpoint and nothing else; analytics_dev is not offered at all.
+# The Toolbox itself stays on 127.0.0.1:5555 for a person (README, notebook).
+{
+	admin off
+}
+
+:80 {
+	@toolset path_regexp ^/mcp/(analytics_readonly|analytics_metadata|inventory_readonly|cross_catalog|analytics_cube_backed|ontology|analytics_engineered)/?$
+	handle @toolset {
+		reverse_proxy toolbox:5000 {
+			flush_interval -1
+		}
+	}
+	handle {
+		respond "not offered to agents: use /mcp/<toolset> (every toolset but analytics_dev)" 404
+	}
+}
