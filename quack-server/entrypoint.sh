@@ -1,7 +1,8 @@
 #!/bin/sh
-# Render init.sql.tmpl with the QUACK_TOKEN env var, then start DuckDB.
-# Piping /dev/null keeps the CLI alive after init completes so the Quack
-# server threads (spawned by CALL quack_serve) keep accepting connections.
+# Render init.sql.tmpl with the QUACK_TOKEN env var, then start DuckDB with the
+# rendered init on stdin. Keeping stdin open keeps the CLI alive after init
+# completes so the Quack server threads (spawned by CALL quack_serve) keep
+# accepting connections.
 set -eu
 
 : "${QUACK_TOKEN:?QUACK_TOKEN must be set}"
@@ -14,9 +15,10 @@ export QUACK_TOKEN QUACK_PORT
 # Whitelist exactly the variables the template expects. A bare
 # `envsubst` would substitute EVERY ${...} occurrence, silently
 # blanking any future SQL that happens to contain one.
-# Render to /tmp so the token-bearing init.sql doesn't linger in
-# /quack for the container's lifetime.
-envsubst '${QUACK_TOKEN} ${QUACK_PORT}' < /quack/init.sql.tmpl > /tmp/init.sql
+# The rendered init (it holds the token) goes to DuckDB on stdin and is
+# never written to a file a query could read.
+init=$(envsubst '${QUACK_TOKEN} ${QUACK_PORT}' < /quack/init.sql.tmpl)
+unset QUACK_TOKEN
 
 db_dir=$(dirname "${QUACK_DB_PATH}")
 mkdir -p "${db_dir}"
@@ -27,4 +29,12 @@ mkdir -p "${db_dir}"
 # at startup also makes the reconnect smoke test deterministic.
 rm -f "${QUACK_DB_PATH}" "${QUACK_DB_PATH}.wal"
 
-exec sh -c "tail -f /dev/null | duckdb '${QUACK_DB_PATH}' -init /tmp/init.sql"
+# DuckDB's CLI keeps serving while its stdin stays open (the in-process Quack
+# server threads outlive the init). sh stays PID 1 and passes a stop on to it,
+# so `docker compose stop` does not wait 10 s for a SIGKILL. -bail: a failing
+# init statement (the authorization callback above all) stops the server
+# instead of serving without it.
+{ printf '%s\n' "$init"; exec tail -f /dev/null; } | duckdb -bail "${QUACK_DB_PATH}" &
+pid=$!
+trap 'kill "$pid" 2>/dev/null; wait "$pid"; exit 0' TERM INT
+wait "$pid"

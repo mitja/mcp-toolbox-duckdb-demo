@@ -23,16 +23,15 @@ CREATE OR REPLACE VIEW main.daily_traffic AS
 CREATE OR REPLACE VIEW main.top_pages_30d AS
     SELECT * FROM read_parquet('/data/marts/top_pages_30d.parquet');
 
--- Read-only authorization macro — same defense-in-depth pattern
--- as the other two Quack servers; install after clients ATTACH
--- (see init.sql.tmpl note).
-CREATE OR REPLACE MACRO read_only(sid, query) AS (
-    regexp_matches(upper(trim(query)), '^(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW)\b')
-);
+-- The read-only authorization callback, on before any client connects (see authz.sql).
+.read /quack/authz.sql
 
+-- quack_serve's result row includes the token: keep it out of the container log.
+.output /dev/null
 CALL quack_serve(
     'quack:0.0.0.0:${QUACK_PORT}',
     token := '${QUACK_TOKEN}',
     allow_other_hostname := true,
     disable_ssl := true
 );
+.output

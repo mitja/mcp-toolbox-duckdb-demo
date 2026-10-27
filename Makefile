@@ -4,7 +4,7 @@
 
 COMPOSE := docker compose
 
-.PHONY: help build up down clean logs bi dataeng obs all \
+.PHONY: help build up down clean logs bi dataeng obs all authz-check \
         trace load-test agent inspect codegen codegen-check \
         ontology ontology-check smoke
 
@@ -62,8 +62,12 @@ ontology: ## Recompile the ontology graph (quack-server/seed-ontology.sql)
 ontology-check: ontology ## Fail if the compiled ontology is out of sync with its sources
 	git diff --exit-code quack-server/seed-ontology.sql
 
-smoke: ## CI-style end-to-end check: build, start core, run load test, tear down
+smoke: ## CI-style end-to-end check: build, start core, run load test and authz check, tear down
 	$(COMPOSE) up -d --build --wait
 	curl -sf http://localhost:13133 > /dev/null && echo "otel-collector healthy"
 	$(COMPOSE) --profile load run --rm trace-load
+	COMPOSE="$(COMPOSE)" scripts/authz-check.sh
 	$(COMPOSE) --profile "*" down
+
+authz-check: ## Prove the read-only posture against the running core stack (data server, edge, validator)
+	COMPOSE="$(COMPOSE)" scripts/authz-check.sh

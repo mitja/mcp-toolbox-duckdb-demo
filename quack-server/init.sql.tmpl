@@ -10,28 +10,19 @@ LOAD quack;
 -- Seed sample analytics data.
 .read /quack/seed.sql
 
--- Read-only authorization macro. Created here but NOT activated:
--- enabling quack_authorization_function before clients have ATTACHed
--- causes ATTACH's own internal catalog queries to be rejected by the
--- macro. To exercise server-side authz in this demo, run after the
--- toolbox container has come up and finished its ATTACH:
---
---   docker exec duckdb-quack duckdb /data/analytics.duckdb -cmd \
---     "SET GLOBAL quack_authorization_function = 'read_only'"
---
--- (Note that this connects a second DuckDB session against the same
--- database file; the SET GLOBAL there is global to the Quack process.)
-CREATE OR REPLACE MACRO read_only(sid, query) AS (
-    regexp_matches(upper(trim(query)), '^(SELECT|WITH|EXPLAIN|DESCRIBE|SHOW)\b')
-);
+-- The read-only authorization callback, on before any client connects (authz.sql says why it looks the way it does).
+.read /quack/authz.sql
 
 -- Start the Quack server. allow_other_hostname is required because
 -- containerized clients connect via the docker network host name, not
 -- 0.0.0.0. disable_ssl is true for this in-cluster demo; production
 -- deployments should terminate TLS at a reverse proxy.
+-- quack_serve's result row includes the token: keep it out of the container log.
+.output /dev/null
 CALL quack_serve(
     'quack:0.0.0.0:${QUACK_PORT}',
     token := '${QUACK_TOKEN}',
     allow_other_hostname := true,
     disable_ssl := true
 );
+.output

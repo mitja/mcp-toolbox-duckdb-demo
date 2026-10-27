@@ -22,6 +22,13 @@ sources:
       reject_multiple_statements: true
       max_rows: 1000
       timeout: 30s
+      # A SELECT may not reach a Quack server around the source (quack_query)
+      # or read the Toolbox's own files (the built-in deny list covers
+      # INSERT, DELETE, ATTACH, COPY, SET, ...). Curated tools here use none
+      # of these; push_down_to_remote wraps after validation.
+      forbidden_patterns: [quack_query, quack_query_by_name, read_text, read_blob,
+        read_csv, read_csv_auto, read_json, read_json_auto, read_ndjson,
+        read_parquet, parquet_scan, glob, sniff_csv, getenv]
 
   # Second Quack server, separate container (quack-server-2). Exercises
   # multi-source routing: tools wired here ATTACH to a different remote
@@ -38,6 +45,13 @@ sources:
       reject_multiple_statements: true
       max_rows: 1000
       timeout: 30s
+      # A SELECT may not reach a Quack server around the source (quack_query)
+      # or read the Toolbox's own files (the built-in deny list covers
+      # INSERT, DELETE, ATTACH, COPY, SET, ...). Curated tools here use none
+      # of these; push_down_to_remote wraps after validation.
+      forbidden_patterns: [quack_query, quack_query_by_name, read_text, read_blob,
+        read_csv, read_csv_auto, read_json, read_json_auto, read_ndjson,
+        read_parquet, parquet_scan, glob, sniff_csv, getenv]
 
   # Engineered warehouse — quack-server-3 wraps the Parquet files
   # produced by the data-engineering track (dlt + dbt-duckdb +
@@ -60,6 +74,13 @@ sources:
       reject_multiple_statements: true
       max_rows: 1000
       timeout: 30s
+      # A SELECT may not reach a Quack server around the source (quack_query)
+      # or read the Toolbox's own files (the built-in deny list covers
+      # INSERT, DELETE, ATTACH, COPY, SET, ...). Curated tools here use none
+      # of these; push_down_to_remote wraps after validation.
+      forbidden_patterns: [quack_query, quack_query_by_name, read_text, read_blob,
+        read_csv, read_csv_auto, read_json, read_json_auto, read_ndjson,
+        read_parquet, parquet_scan, glob, sniff_csv, getenv]
 
   # Multi-attach source: one in-process DuckDB with BOTH Quack servers
   # ATTACHed. Tools wired here can write a single SQL that references
@@ -84,6 +105,13 @@ sources:
       reject_multiple_statements: true
       max_rows: 1000
       timeout: 30s
+      # A SELECT may not reach a Quack server around the source (quack_query)
+      # or read the Toolbox's own files (the built-in deny list covers
+      # INSERT, DELETE, ATTACH, COPY, SET, ...). Curated tools here use none
+      # of these; push_down_to_remote wraps after validation.
+      forbidden_patterns: [quack_query, quack_query_by_name, read_text, read_blob,
+        read_csv, read_csv_auto, read_json, read_json_auto, read_ndjson,
+        read_parquet, parquet_scan, glob, sniff_csv, getenv]
 
 tools:
   revenue_by_customer:

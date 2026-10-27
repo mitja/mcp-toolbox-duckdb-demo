@@ -3,27 +3,27 @@
   "mcpServers": {
     "toolbox-ontology": {
       "transport": "streamable-http",
-      "url": "http://localhost:5555/mcp/ontology",
+      "url": "http://localhost:5556/mcp/ontology",
       "lifecycle": "eager"
     },
     "toolbox-analytics-readonly": {
       "transport": "streamable-http",
-      "url": "http://localhost:5555/mcp/analytics_readonly",
+      "url": "http://localhost:5556/mcp/analytics_readonly",
       "lifecycle": "eager"
     },
     "toolbox-analytics-metadata": {
       "transport": "streamable-http",
-      "url": "http://localhost:5555/mcp/analytics_metadata",
+      "url": "http://localhost:5556/mcp/analytics_metadata",
       "lifecycle": "eager"
     },
     "toolbox-inventory-readonly": {
       "transport": "streamable-http",
-      "url": "http://localhost:5555/mcp/inventory_readonly",
+      "url": "http://localhost:5556/mcp/inventory_readonly",
       "lifecycle": "eager"
     },
     "toolbox-cross-catalog": {
       "transport": "streamable-http",
-      "url": "http://localhost:5555/mcp/cross_catalog",
+      "url": "http://localhost:5556/mcp/cross_catalog",
       "lifecycle": "lazy"
     }
   }
